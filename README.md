@@ -1,22 +1,22 @@
-# GymJot ESP32-CAM Firmware
+# gymjot cuff firmware
 
-PlatformIO firmware for ESP32-CAM that communicates with the GymJot mobile app.
+PlatformIO firmware for the gymjot cuff device running on ESP32-CAM, communicating with the companion mobile app.
 
 ## Features
 - BLE Nordic UART JSON protocol
 - Test mode (simulates AprilTag + reps)
 - Real AprilTag hooks (compile with -DUSE_APRILTAG=1)
-- Modes: Discovery → Scanning → Loiter (low FPS)
+- Modes: Discovery + Scanning + Loiter (low FPS)
 
 ## BLE Protocol
-**Device → Phone:**
+**Device ? Phone:**
 ```json
 {"type":"status","status":"boot"}
 {"type":"scan","tagId":16,"distanceCm":72.4}
 {"type":"rep","count":3}
 ```
 
-**Phone → Device:**
+**Phone ? Device:**
 ```json
 {"cmd":"test","on":true}
 {"cmd":"fps","value":8}
