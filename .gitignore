@@ -39,3 +39,20 @@
 
 # debug information files
 *.dwo
+
+# PlatformIO build and environment files
+.pio/
+.vscode/
+
+# Build artifacts
+.sconsign.dblite
+**/*.elf
+**/*.hex
+**/*.bin
+**/*.map
+
+# Library dependencies (if not managed through platformio.ini's lib_deps)
+.pio/libdeps/
+
+# Other temporary or generated files
+# (Add any other files or directories specific to your project that should not be committed)
