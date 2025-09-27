@@ -1,0 +1,28 @@
+{
+    "name":  "apriltag-gymjot",
+    "version":  "3.3.0-gymjot1",
+    "license":  "BSD-2-Clause",
+    "build":  {
+                  "includeDir":  ".",
+                  "srcDir":  ".",
+                  "flags":  [
+                                "-DAPRILTAG_USE_CUSTOM_WORKERPOOL"
+                            ],
+                  "srcFilter":  [
+                                    "+\u003capriltag.c\u003e",
+                                    "+\u003capriltag_pose.c\u003e",
+                                    "+\u003capriltag_quad_thresh.c\u003e",
+                                    "+\u003ctagCircle49h12.c\u003e",
+                                    "+\u003ccommon/*.c\u003e",
+                                    "-\u003ccommon/pthreads_cross.c\u003e",
+                                    "-\u003ccommon/workerpool.c\u003e",
+                                    "-\u003ccommon/pam.c\u003e",
+                                    "-\u003ccommon/pjpeg.c\u003e",
+                                    "-\u003ccommon/pjpeg-idct.c\u003e",
+                                    "-\u003ccommon/pnm.c\u003e",
+                                    "-\u003capriltag_pywrap.c\u003e",
+                                    "-\u003cexample/*\u003e",
+                                    "-\u003ctest/*\u003e"
+                                ]
+              }
+}

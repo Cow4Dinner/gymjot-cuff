@@ -1,0 +1,28 @@
+{
+  "name": "apriltag",
+  "version": "3.3.0",
+  "license": "BSD-2-Clause",
+  "build": {
+    "includeDir": ".",
+    "srcDir": ".",
+    "flags": [
+      "-DAPRILTAG_USE_CUSTOM_WORKERPOOL"
+    ],
+    "srcFilter": [
+      "+<apriltag.c>",
+      "+<apriltag_pose.c>",
+      "+<apriltag_quad_thresh.c>",
+      "+<tagCircle49h12.c>",
+      "+<common/*.c>",
+      "-<common/pthreads_cross.c>",
+      "-<common/workerpool.c>",
+      "-<common/pam.c>",
+      "-<common/pjpeg.c>",
+      "-<common/pjpeg-idct.c>",
+      "-<common/pnm.c>",
+      "-<apriltag_pywrap.c>",
+      "-<example/*>",
+      "-<test/*>"
+    ]
+  }
+}
