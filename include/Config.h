@@ -1,6 +1,6 @@
 #pragma once
 
-#define TEST_MODE_DEFAULT true
+#define TEST_MODE_DEFAULT false
 #define DEFAULT_FPS 8.0f
 #define LOITER_FPS 0.3333f
 #define APRILTAG_LOST_MS 10000
