@@ -1,9 +1,49 @@
 #include "CuffController.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 namespace gymjot {
+
+namespace {
+
+constexpr size_t kMaxMetadataEntries = 10;
+
+com_gymjot_cuff_DeviceMode toProto(DeviceMode mode) {
+    switch (mode) {
+        case DeviceMode::Idle:
+            return com_gymjot_cuff_DeviceMode_DEVICE_MODE_IDLE;
+        case DeviceMode::AwaitingStation:
+            return com_gymjot_cuff_DeviceMode_DEVICE_MODE_AWAITING_STATION;
+        case DeviceMode::Scanning:
+            return com_gymjot_cuff_DeviceMode_DEVICE_MODE_SCANNING;
+        case DeviceMode::Loiter:
+            return com_gymjot_cuff_DeviceMode_DEVICE_MODE_LOITER;
+    }
+    return com_gymjot_cuff_DeviceMode_DEVICE_MODE_IDLE;
+}
+
+void copyString(const std::string& source, char* dest, size_t capacity) {
+    if (capacity == 0) {
+        return;
+    }
+    std::memset(dest, 0, capacity);
+    std::strncpy(dest, source.c_str(), capacity - 1);
+}
+
+void populateMetadata(const MetadataList& source, com_gymjot_cuff_StationMetadata& target) {
+    std::memset(&target, 0, sizeof(target));
+    target.entries_count = static_cast<pb_size_t>(std::min<size_t>(source.size(), kMaxMetadataEntries));
+    for (pb_size_t i = 0; i < target.entries_count; ++i) {
+        const auto& entry = source[i];
+        copyString(entry.key, target.entries[i].key, sizeof(target.entries[i].key));
+        copyString(entry.value, target.entries[i].value, sizeof(target.entries[i].value));
+    }
+}
+
+}  // namespace
 
 void StationSession::reset() {
     active = false;
@@ -11,7 +51,7 @@ void StationSession::reset() {
     requestSent = false;
     tagId = 0;
     name.clear();
-    metadataJson.clear();
+    metadata.clear();
     lastSeenMs = 0;
     lastRequestMs = 0;
 }
@@ -243,19 +283,21 @@ void CuffController::startTestSession(uint64_t nowMs) {
     repTracker_.reset();
     deviceMode_ = DeviceMode::AwaitingStation;
 
-    sendStationBroadcast(config_.testStationId, config_.testStationName, config_.testStationMetadata, nowMs, "test");
+    sendStationBroadcast(config_.testStationId, config_.testStationName, config_.testStationMetadata, nowMs, true);
     applyStationMetadata(config_.testStationId, config_.testStationName, config_.testStationMetadata, nowMs);
     testSimulator_.reset();
-    AprilTagDetection dummy;
 }
 
-void CuffController::applyStationMetadata(uint32_t tagId, const std::string& name, const std::string& metadataJson, uint64_t nowMs) {
+void CuffController::applyStationMetadata(uint32_t tagId, const std::string& name, const MetadataList& metadata, uint64_t nowMs) {
     session_.tagId = tagId;
     session_.metadataReady = true;
     session_.requestSent = true;
     session_.lastRequestMs = nowMs;
     session_.name = name;
-    session_.metadataJson = metadataJson;
+    session_.metadata = metadata;
+    if (session_.metadata.size() > kMaxMetadataEntries) {
+        session_.metadata.resize(kMaxMetadataEntries);
+    }
     session_.lastSeenMs = nowMs;
     deviceMode_ = DeviceMode::Scanning;
     notifyStatus("scanning", nowMs);
@@ -273,102 +315,133 @@ void CuffController::handleStationPayload(const StationPayload& payload, uint64_
         setTargetFps(payload.fps.value(), nowMs);
     }
 
-    applyStationMetadata(payload.id, payload.name, payload.metadataJson, nowMs);
+    applyStationMetadata(payload.id, payload.name, payload.metadata, nowMs);
 
-    StaticJsonDocument<128> ack;
-    ack["type"] = "status";
-    ack["status"] = "stationReady";
-    ack["stationId"] = payload.id;
-    ack["timestamp"] = nowMs;
-    sendJsonDoc(ack);
-}
-
-void CuffController::notifyStatus(const std::string& status, uint64_t nowMs) {
-    StaticJsonDocument<192> doc;
-    doc["type"] = "status";
-    doc["status"] = status.c_str();
-    doc["timestamp"] = nowMs;
-    doc["mode"] = static_cast<int>(deviceMode_);
-    doc["fps"] = (deviceMode_ == DeviceMode::Loiter) ? config_.loiterFps : targetFps_;
-    if (testMode_) {
-        doc["testMode"] = true;
-    }
-    sendJsonDoc(doc);
-}
-
-void CuffController::sendJsonDoc(const JsonDocument& doc) {
     if (!send_) {
         return;
     }
-    std::string payload;
-    serializeJson(doc, payload);
-    send_(payload);
+
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_station_ready_tag;
+    evt.event.station_ready.station_id = payload.id;
+    send_(evt);
+}
+
+void CuffController::notifyStatus(const std::string& status, uint64_t nowMs) {
+    if (!send_) {
+        return;
+    }
+
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_status_tag;
+
+    auto& statusMsg = evt.event.status;
+    copyString(status, statusMsg.status_label, sizeof(statusMsg.status_label));
+    statusMsg.mode = toProto(deviceMode_);
+    statusMsg.fps = (deviceMode_ == DeviceMode::Loiter) ? config_.loiterFps : targetFps_;
+    statusMsg.test_mode = testMode_;
+
+    send_(evt);
 }
 
 void CuffController::sendTagAnnouncement(uint32_t tagId, uint64_t nowMs, bool fromTest) {
-    StaticJsonDocument<192> doc;
-    doc["type"] = "tag";
-    doc["tagId"] = tagId;
-    doc["timestamp"] = nowMs;
-    if (fromTest) {
-        doc["origin"] = "test";
+    if (!send_) {
+        return;
     }
-    sendJsonDoc(doc);
+
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_tag_tag;
+
+    auto& tagMsg = evt.event.tag;
+    tagMsg.tag_id = tagId;
+    tagMsg.from_test_mode = fromTest;
+
+    send_(evt);
 }
 
 void CuffController::sendStationRequest(uint32_t tagId, uint64_t nowMs) {
-    StaticJsonDocument<192> doc;
-    doc["type"] = "stationRequest";
-    doc["tagId"] = tagId;
-    doc["timestamp"] = nowMs;
-    sendJsonDoc(doc);
+    if (!send_) {
+        return;
+    }
+
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_station_request_tag;
+    evt.event.station_request.tag_id = tagId;
+
+    send_(evt);
 }
 
-void CuffController::sendStationBroadcast(uint32_t id, const std::string& name, const std::string& metadataJson, uint64_t nowMs, const char* origin) {
-    StaticJsonDocument<256> doc;
-    doc["type"] = "station";
-    doc["id"] = id;
-    doc["name"] = name.c_str();
-    if (origin) {
-        doc["origin"] = origin;
+void CuffController::sendStationBroadcast(uint32_t id, const std::string& name, const MetadataList& metadata, uint64_t nowMs, bool fromTest) {
+    if (!send_) {
+        return;
     }
 
-    if (!metadataJson.empty()) {
-        StaticJsonDocument<256> meta;
-        if (deserializeJson(meta, metadataJson) == DeserializationError::Ok) {
-            doc["metadata"] = meta.as<JsonObject>();
-        } else {
-            doc["metadata"] = metadataJson.c_str();
-        }
-    }
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_station_broadcast_tag;
 
-    sendJsonDoc(doc);
+    auto& broadcast = evt.event.station_broadcast;
+    broadcast.station_id = id;
+    broadcast.from_test_mode = fromTest;
+    copyString(name, broadcast.name, sizeof(broadcast.name));
+    populateMetadata(metadata, broadcast.metadata);
+    broadcast.has_metadata = broadcast.metadata.entries_count > 0;
+
+    send_(evt);
 }
 
 void CuffController::sendScan(const AprilTagDetection& detection, uint64_t nowMs) {
-    StaticJsonDocument<256> doc;
-    doc["type"] = "scan";
-    doc["tagId"] = detection.tagId;
-    doc["distanceCm"] = detection.distanceCm;
-    doc["timestamp"] = nowMs;
-    doc["mode"] = (deviceMode_ == DeviceMode::Loiter) ? "loiter" : "scanning";
-    doc["fps"] = (deviceMode_ == DeviceMode::Loiter) ? config_.loiterFps : targetFps_;
-    if (session_.metadataReady && !session_.name.empty()) {
-        doc["stationName"] = session_.name.c_str();
+    if (!send_) {
+        return;
     }
-    sendJsonDoc(doc);
+
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_scan_tag;
+
+    auto& scan = evt.event.scan;
+    scan.tag_id = detection.tagId;
+    scan.distance_cm = detection.distanceCm;
+    scan.mode = toProto(deviceMode_);
+    scan.fps = (deviceMode_ == DeviceMode::Loiter) ? config_.loiterFps : targetFps_;
+
+    if (session_.metadataReady && !session_.name.empty()) {
+        scan.has_station_name = true;
+        copyString(session_.name, scan.station_name, sizeof(scan.station_name));
+    } else {
+        scan.has_station_name = false;
+        scan.station_name[0] = '\0';
+    }
+
+    send_(evt);
 }
 
 void CuffController::sendRep(uint64_t nowMs) {
-    StaticJsonDocument<192> doc;
-    doc["type"] = "rep";
-    doc["count"] = repTracker_.count();
-    doc["tagId"] = session_.tagId;
-    doc["timestamp"] = nowMs;
-    if (session_.metadataReady && !session_.name.empty()) {
-        doc["stationName"] = session_.name.c_str();
+    if (!send_) {
+        return;
     }
-    sendJsonDoc(doc);
+
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_rep_tag;
+
+    auto& rep = evt.event.rep;
+    rep.tag_id = session_.tagId;
+    rep.rep_count = repTracker_.count();
+
+    if (session_.metadataReady && !session_.name.empty()) {
+        rep.has_station_name = true;
+        copyString(session_.name, rep.station_name, sizeof(rep.station_name));
+    } else {
+        rep.has_station_name = false;
+        rep.station_name[0] = '\0';
+    }
+
+    send_(evt);
 }
 
 void CuffController::enterLoiter(uint64_t nowMs) {

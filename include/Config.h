@@ -1,5 +1,7 @@
 #pragma once
 
+#include "MetadataTypes.h"
+
 #define TEST_MODE_DEFAULT false
 #define DEFAULT_FPS 8.0f
 #define LOITER_FPS 0.3333f
@@ -10,7 +12,14 @@
 
 #define TEST_STATION_ID 4242
 #define TEST_STATION_NAME "Demo Station"
-#define TEST_STATION_METADATA "{\"exercise\":\"Lat Pulldown\",\"muscleGroup\":\"Back\",\"intensity\":\"moderate\"}"
+
+inline gymjot::MetadataList defaultTestStationMetadata() {
+    return gymjot::MetadataList{
+        {"exercise", "Lat Pulldown"},
+        {"muscleGroup", "Back"},
+        {"intensity", "moderate"}
+    };
+}
 
 #define APRILTAG_TAG_SIZE_M 0.055f
 #define APRILTAG_FX 615.0f

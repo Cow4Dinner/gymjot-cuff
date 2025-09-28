@@ -1,10 +1,10 @@
-#include <ArduinoJson.h>
 #include <unity.h>
 
 #include "CuffController.h"
+#include "proto/cuff.pb.h"
 
-#include <vector>
 #include <string>
+#include <vector>
 
 extern "C" void setUp(void) {}
 extern "C" void tearDown(void) {}
@@ -12,23 +12,17 @@ extern "C" void tearDown(void) {}
 using gymjot::AprilTagDetection;
 using gymjot::ControllerConfig;
 using gymjot::CuffController;
+using gymjot::MetadataList;
 using gymjot::StationPayload;
 
 namespace {
 struct Sink {
-    std::vector<std::string> messages;
-    void operator()(const std::string& msg) {
-        messages.push_back(msg);
+    std::vector<com_gymjot_cuff_DeviceEvent> events;
+    void operator()(const com_gymjot_cuff_DeviceEvent& evt) {
+        events.push_back(evt);
     }
-    void clear() { messages.clear(); }
+    void clear() { events.clear(); }
 };
-
-StaticJsonDocument<512> parseJson(const std::string& payload) {
-    StaticJsonDocument<512> doc;
-    auto err = deserializeJson(doc, payload);
-    TEST_ASSERT_TRUE_MESSAGE(err == DeserializationError::Ok, payload.c_str());
-    return doc;
-}
 }
 
 static void test_testmode_generates_messages() {
@@ -42,9 +36,9 @@ static void test_testmode_generates_messages() {
     cfg.maxRepIdleMs = 1000;
     cfg.testStationId = 4242;
     cfg.testStationName = "Sim Station";
-    cfg.testStationMetadata = "{\"exercise\":\"Row\"}";
+    cfg.testStationMetadata = { {"exercise", "Row"} };
 
-    CuffController controller(cfg, [&](const std::string& msg) { sink(msg); });
+    CuffController controller(cfg, [&](const com_gymjot_cuff_DeviceEvent& evt) { sink(evt); });
 
     uint64_t now = 0;
     controller.maintainTestMode(now);
@@ -62,16 +56,18 @@ static void test_testmode_generates_messages() {
     bool sawRep = false;
     uint32_t reps = 0;
 
-    for (const auto& msg : sink.messages) {
-        auto doc = parseJson(msg);
-        std::string type = doc["type"].as<std::string>();
-        if (type == "scan") {
-            sawScan = true;
-            TEST_ASSERT_EQUAL_UINT(cfg.testStationId, doc["tagId"].as<uint32_t>());
-        }
-        if (type == "rep") {
-            sawRep = true;
-            reps = doc["count"].as<uint32_t>();
+    for (const auto& evt : sink.events) {
+        switch (evt.which_event) {
+            case com_gymjot_cuff_DeviceEvent_scan_tag:
+                sawScan = true;
+                TEST_ASSERT_EQUAL_UINT32(cfg.testStationId, evt.event.scan.tag_id);
+                break;
+            case com_gymjot_cuff_DeviceEvent_rep_tag:
+                sawRep = true;
+                reps = evt.event.rep.rep_count;
+                break;
+            default:
+                break;
         }
     }
 
@@ -87,8 +83,9 @@ static void test_station_payload_updates_config() {
     cfg.defaultTestMode = false;
     cfg.defaultFps = 6.0f;
     cfg.loiterFps = 1.0f;
+    cfg.testStationMetadata = {};
 
-    CuffController controller(cfg, [&](const std::string& msg) { sink(msg); });
+    CuffController controller(cfg, [&](const com_gymjot_cuff_DeviceEvent& evt) { sink(evt); });
 
     uint64_t now = 0;
     AprilTagDetection detection{1234, 80.0f};
@@ -97,7 +94,7 @@ static void test_station_payload_updates_config() {
     StationPayload payload;
     payload.id = 1234;
     payload.name = "Bench";
-    payload.metadataJson = "{}";
+    payload.metadata = { {"tempo", "slow"} };
     payload.minTravelCm = 5.0f;
     payload.fps = 5.0f;
 
@@ -111,11 +108,11 @@ static void test_station_payload_updates_config() {
     }
 
     bool sawScan = false;
-    for (const auto& msg : sink.messages) {
-        auto doc = parseJson(msg);
-        if (doc["type"].as<std::string>() == "scan") {
+    for (const auto& evt : sink.events) {
+        if (evt.which_event == com_gymjot_cuff_DeviceEvent_scan_tag) {
             sawScan = true;
-            TEST_ASSERT_EQUAL_STRING("Bench", doc["stationName"].as<const char*>());
+            TEST_ASSERT_TRUE(evt.event.scan.has_station_name);
+            TEST_ASSERT_EQUAL_STRING("Bench", evt.event.scan.station_name);
         }
     }
     TEST_ASSERT_TRUE(sawScan);
@@ -127,7 +124,3 @@ int main() {
     RUN_TEST(test_station_payload_updates_config);
     return UNITY_END();
 }
-
-
-
-

@@ -1,6 +1,11 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
-#include <ArduinoJson.h>
+#include <pb_decode.h>
+#include <pb_encode.h>
+
+#include "proto/cuff.pb.h"
+#include <array>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <cmath>
@@ -47,28 +52,94 @@ static bool g_cameraReady = false;
 static apriltag_family_t* g_tagFamily = nullptr;
 static apriltag_detector_t* g_tagDetector = nullptr;
 
-static const size_t BLE_JSON_CAPACITY = 512;
+static constexpr size_t kProtoBufferSize = 512;
+static constexpr size_t kLengthPrefixBytes = 2;
 
-static void processCommand(const std::string& cmd);
-
-static void sendMessage(const std::string& msg) {
-    if (g_tx) {
-
-        g_tx->setValue(msg);
-        g_tx->notify();
+static com_gymjot_cuff_DeviceMode toProtoMode(gymjot::DeviceMode mode) {
+    switch (mode) {
+        case gymjot::DeviceMode::Idle:
+            return com_gymjot_cuff_DeviceMode_DEVICE_MODE_IDLE;
+        case gymjot::DeviceMode::AwaitingStation:
+            return com_gymjot_cuff_DeviceMode_DEVICE_MODE_AWAITING_STATION;
+        case gymjot::DeviceMode::Scanning:
+            return com_gymjot_cuff_DeviceMode_DEVICE_MODE_SCANNING;
+        case gymjot::DeviceMode::Loiter:
+            return com_gymjot_cuff_DeviceMode_DEVICE_MODE_LOITER;
     }
-    Serial.print("-> ");
-    Serial.println(msg.c_str());
+    return com_gymjot_cuff_DeviceMode_DEVICE_MODE_IDLE;
+}
+
+static gymjot::MetadataList metadataFromProto(const com_gymjot_cuff_StationMetadata& metadata) {
+    gymjot::MetadataList result;
+    result.reserve(metadata.entries_count);
+    for (pb_size_t i = 0; i < metadata.entries_count; ++i) {
+        const auto& entry = metadata.entries[i];
+        result.push_back({entry.key, entry.value});
+    }
+    return result;
+}
+
+static bool sendEvent(const com_gymjot_cuff_DeviceEvent& event);
+static void processCommand(const uint8_t* data, size_t len);
+
+static void logPacket(size_t len) {
+    Serial.print("-> [");
+    Serial.print(len);
+    Serial.println(" bytes]");
 }
 
 class RxCallback : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
         std::string val = characteristic->getValue();
-        if (!val.empty()) {
-            processCommand(val);
+        if (val.size() < kLengthPrefixBytes) {
+            Serial.println("<- command too short");
+            return;
         }
+
+        const auto* data = reinterpret_cast<const uint8_t*>(val.data());
+        const uint16_t expected = static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
+        const size_t available = val.size() - kLengthPrefixBytes;
+        if (expected != available) {
+            Serial.println("<- length mismatch");
+            return;
+        }
+
+        processCommand(data + kLengthPrefixBytes, available);
     }
 };
+
+static bool sendEvent(const com_gymjot_cuff_DeviceEvent& event) {
+    if (!g_tx) {
+        return false;
+    }
+
+    std::array<uint8_t, kLengthPrefixBytes + kProtoBufferSize> buffer{};
+    pb_ostream_t stream = pb_ostream_from_buffer(buffer.data() + kLengthPrefixBytes, kProtoBufferSize);
+    if (!pb_encode(&stream, com_gymjot_cuff_DeviceEvent_fields, &event)) {
+        Serial.print("encode error: ");
+        Serial.println(PB_GET_ERROR(&stream));
+        return false;
+    }
+
+    const size_t payloadLen = stream.bytes_written;
+    if (payloadLen > 0xFFFF) {
+        Serial.println("encode error: payload too large");
+        return false;
+    }
+
+    buffer[0] = static_cast<uint8_t>(payloadLen & 0xFF);
+    buffer[1] = static_cast<uint8_t>((payloadLen >> 8) & 0xFF);
+    const size_t totalLen = payloadLen + kLengthPrefixBytes;
+
+    g_tx->setValue(buffer.data(), totalLen);
+    if (!g_tx->notify()) {
+        Serial.println("notify failed");
+        return false;
+    }
+
+    logPacket(totalLen);
+    return true;
+}
 
 static void setupController() {
     ControllerConfig cfg;
@@ -80,9 +151,9 @@ static void setupController() {
     cfg.maxRepIdleMs = DEFAULT_MAX_REP_IDLE_MS;
     cfg.testStationId = TEST_STATION_ID;
     cfg.testStationName = TEST_STATION_NAME;
-    cfg.testStationMetadata = TEST_STATION_METADATA;
+    cfg.testStationMetadata = defaultTestStationMetadata();
 
-    g_controller = std::make_unique<CuffController>(cfg, sendMessage);
+    g_controller = std::make_unique<CuffController>(cfg, sendEvent);
 }
 
 static bool setupCamera() {
@@ -242,58 +313,62 @@ static bool captureAprilTag(AprilTagDetection& detection) {
 }
 
 static void sendBootStatus(uint64_t nowMs) {
-    StaticJsonDocument<128> doc;
-    doc["type"] = "status";
-    doc["status"] = "boot";
-    doc["timestamp"] = nowMs;
-    if (g_controller && g_controller->testMode()) {
-        doc["testMode"] = true;
-    }
-    std::string msg;
-    serializeJson(doc, msg);
-    sendMessage(msg);
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_boot_tag;
+
+    auto& boot = evt.event.boot;
+    boot.test_mode = g_controller && g_controller->testMode();
+    boot.mode = g_controller ? toProtoMode(g_controller->mode()) : com_gymjot_cuff_DeviceMode_DEVICE_MODE_IDLE;
+    boot.fps = g_controller ? g_controller->targetFps() : DEFAULT_FPS;
+
+    sendEvent(evt);
 }
 
-void processCommand(const std::string& cmd) {
+void processCommand(const uint8_t* data, size_t len) {
     if (!g_controller) {
         return;
     }
 
-    StaticJsonDocument<BLE_JSON_CAPACITY> doc;
-    DeserializationError err = deserializeJson(doc, cmd);
-    uint64_t now = millis();
-
-    if (err) {
-        if (cmd.find("test") != std::string::npos) {
-            bool enable = cmd.find("true") != std::string::npos;
-            g_controller->setTestMode(enable, now);
-        }
+    com_gymjot_cuff_DeviceCommand cmd = com_gymjot_cuff_DeviceCommand_init_default;
+    pb_istream_t stream = pb_istream_from_buffer(data, len);
+    if (!pb_decode(&stream, com_gymjot_cuff_DeviceCommand_fields, &cmd)) {
+        Serial.print("decode error: ");
+        Serial.println(PB_GET_ERROR(&stream));
         return;
     }
 
-    std::string type = doc["type"].as<std::string>();
-    if (type == "test") {
-        bool enabled = doc["enabled"].isNull() ? doc["value"].as<bool>() : doc["enabled"].as<bool>();
-        g_controller->setTestMode(enabled, now);
-    } else if (type == "fps") {
-        float fps = doc["fps"].isNull() ? g_controller->targetFps() : doc["fps"].as<float>();
-        g_controller->setTargetFps(fps, now);
-    } else if (type == "station") {
-        StationPayload payload;
-        payload.id = doc["id"].as<uint32_t>();
-        payload.name = doc["name"].as<std::string>();
-        if (!doc["metadata"].isNull()) {
-            serializeJson(doc["metadata"], payload.metadataJson);
+    uint64_t now = millis();
+    switch (cmd.which_command) {
+        case com_gymjot_cuff_DeviceCommand_set_test_mode_tag:
+            g_controller->setTestMode(cmd.command.set_test_mode.enabled, now);
+            break;
+        case com_gymjot_cuff_DeviceCommand_set_target_fps_tag:
+            g_controller->setTargetFps(cmd.command.set_target_fps.fps, now);
+            break;
+        case com_gymjot_cuff_DeviceCommand_station_update_tag: {
+            const auto& update = cmd.command.station_update;
+            StationPayload payload;
+            payload.id = update.station_id;
+            payload.name = update.name;
+            if (update.set_min_travel_cm) {
+                payload.minTravelCm = update.min_travel_cm;
+            }
+            if (update.set_fps) {
+                payload.fps = update.fps;
+            }
+            if (update.has_metadata) {
+                payload.metadata = metadataFromProto(update.metadata);
+            }
+            g_controller->handleStationPayload(payload, now);
+            break;
         }
-        if (doc.containsKey("minTravelCm")) {
-            payload.minTravelCm = doc["minTravelCm"].as<float>();
-        }
-        if (doc.containsKey("fps")) {
-            payload.fps = doc["fps"].as<float>();
-        }
-        g_controller->handleStationPayload(payload, now);
-    } else if (type == "resetReps") {
-        g_controller->resetReps(now);
+        case com_gymjot_cuff_DeviceCommand_reset_reps_tag:
+            g_controller->resetReps(now);
+            break;
+        default:
+            Serial.println("<- unknown command");
+            break;
     }
 }
 

@@ -1,0 +1,8 @@
+com.gymjot.cuff.MetadataEntry.key max_length:32
+com.gymjot.cuff.MetadataEntry.value max_length:96
+com.gymjot.cuff.StationMetadata.entries max_count:10
+com.gymjot.cuff.StationUpdateCommand.name max_length:64
+com.gymjot.cuff.StatusEvent.status_label max_length:32
+com.gymjot.cuff.StationBroadcastEvent.name max_length:64
+com.gymjot.cuff.ScanEvent.station_name max_length:64
+com.gymjot.cuff.RepEvent.station_name max_length:64

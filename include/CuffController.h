@@ -1,12 +1,15 @@
 #pragma once
 
-#include <ArduinoJson.h>
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
+#include <vector>
 #include <cmath>
 #include <limits>
-#include <string>
+
+#include "MetadataTypes.h"
+#include "proto/cuff.pb.h"
 
 namespace gymjot {
 
@@ -23,7 +26,7 @@ struct StationSession {
     bool requestSent = false;
     uint32_t tagId = 0;
     std::string name;
-    std::string metadataJson;
+    MetadataList metadata;
     uint64_t lastSeenMs = 0;
     uint64_t lastRequestMs = 0;
 
@@ -76,20 +79,20 @@ struct ControllerConfig {
     uint32_t maxRepIdleMs = 5000;
     uint32_t testStationId = 4242;
     std::string testStationName = "Demo Station";
-    std::string testStationMetadata = "{\"exercise\":\"Lat Pulldown\",\"muscleGroup\":\"Back\",\"intensity\":\"moderate\"}";
+    MetadataList testStationMetadata;
 };
 
 struct StationPayload {
     uint32_t id = 0;
     std::string name;
-    std::string metadataJson;
+    MetadataList metadata;
     std::optional<float> minTravelCm;
     std::optional<float> fps;
 };
 
 class CuffController {
 public:
-    using SendCallback = std::function<void(const std::string&)>;
+    using SendCallback = std::function<void(const com_gymjot_cuff_DeviceEvent&)>;
 
     CuffController(const ControllerConfig& config, SendCallback sendFn);
 
@@ -112,17 +115,16 @@ public:
     void evaluateTimeouts(uint64_t nowMs);
     void maintainTestMode(uint64_t nowMs);
     void startTestSession(uint64_t nowMs);
-    void applyStationMetadata(uint32_t tagId, const std::string& name, const std::string& metadataJson, uint64_t nowMs);
+    void applyStationMetadata(uint32_t tagId, const std::string& name, const MetadataList& metadata, uint64_t nowMs);
     void handleStationPayload(const StationPayload& payload, uint64_t nowMs);
 
     void setSendCallback(SendCallback cb) { send_ = std::move(cb); }
 
 private:
     void notifyStatus(const std::string& status, uint64_t nowMs);
-    void sendJsonDoc(const JsonDocument& doc);
     void sendTagAnnouncement(uint32_t tagId, uint64_t nowMs, bool fromTest);
     void sendStationRequest(uint32_t tagId, uint64_t nowMs);
-    void sendStationBroadcast(uint32_t id, const std::string& name, const std::string& metadataJson, uint64_t nowMs, const char* origin);
+    void sendStationBroadcast(uint32_t id, const std::string& name, const MetadataList& metadata, uint64_t nowMs, bool fromTest);
     void sendScan(const AprilTagDetection& detection, uint64_t nowMs);
     void sendRep(uint64_t nowMs);
     void enterLoiter(uint64_t nowMs);
