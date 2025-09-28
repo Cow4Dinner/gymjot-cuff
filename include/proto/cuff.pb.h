@@ -17,6 +17,14 @@ typedef enum _com_gymjot_cuff_DeviceMode {
     com_gymjot_cuff_DeviceMode_DEVICE_MODE_LOITER = 3
 } com_gymjot_cuff_DeviceMode;
 
+typedef enum _com_gymjot_cuff_OtaPhase {
+    com_gymjot_cuff_OtaPhase_OTA_PHASE_IDLE = 0,
+    com_gymjot_cuff_OtaPhase_OTA_PHASE_PREPARING = 1,
+    com_gymjot_cuff_OtaPhase_OTA_PHASE_TRANSFER = 2,
+    com_gymjot_cuff_OtaPhase_OTA_PHASE_APPLYING = 3,
+    com_gymjot_cuff_OtaPhase_OTA_PHASE_ERROR = 4
+} com_gymjot_cuff_OtaPhase;
+
 /* Struct definitions */
 typedef struct _com_gymjot_cuff_MetadataEntry {
     char key[33];
@@ -51,6 +59,45 @@ typedef struct _com_gymjot_cuff_ResetRepsCommand {
     char dummy_field;
 } com_gymjot_cuff_ResetRepsCommand;
 
+typedef struct _com_gymjot_cuff_PowerCommand {
+    bool shutdown;
+} com_gymjot_cuff_PowerCommand;
+
+typedef struct _com_gymjot_cuff_FactoryResetCommand {
+    bool confirm;
+} com_gymjot_cuff_FactoryResetCommand;
+
+typedef struct _com_gymjot_cuff_SnapshotRequestCommand {
+    char dummy_field;
+} com_gymjot_cuff_SnapshotRequestCommand;
+
+typedef struct _com_gymjot_cuff_UpdateDeviceConfigCommand {
+    bool set_target_fps;
+    float target_fps;
+    bool set_loiter_fps;
+    float loiter_fps;
+    bool set_min_travel_cm;
+    float min_travel_cm;
+    bool set_max_rep_idle_ms;
+    uint32_t max_rep_idle_ms;
+} com_gymjot_cuff_UpdateDeviceConfigCommand;
+
+typedef struct _com_gymjot_cuff_OtaBeginCommand {
+    uint32_t total_size;
+    uint32_t chunk_size;
+    char version[33];
+    pb_callback_t sha256;
+} com_gymjot_cuff_OtaBeginCommand;
+
+typedef struct _com_gymjot_cuff_OtaChunkCommand {
+    uint32_t offset;
+    pb_callback_t data;
+} com_gymjot_cuff_OtaChunkCommand;
+
+typedef struct _com_gymjot_cuff_OtaCompleteCommand {
+    bool apply;
+} com_gymjot_cuff_OtaCompleteCommand;
+
 typedef struct _com_gymjot_cuff_DeviceCommand {
     uint64_t timestamp_ms;
     pb_size_t which_command;
@@ -59,6 +106,13 @@ typedef struct _com_gymjot_cuff_DeviceCommand {
         com_gymjot_cuff_SetTargetFpsCommand set_target_fps;
         com_gymjot_cuff_StationUpdateCommand station_update;
         com_gymjot_cuff_ResetRepsCommand reset_reps;
+        com_gymjot_cuff_PowerCommand power;
+        com_gymjot_cuff_FactoryResetCommand factory_reset;
+        com_gymjot_cuff_SnapshotRequestCommand snapshot_request;
+        com_gymjot_cuff_UpdateDeviceConfigCommand update_device_config;
+        com_gymjot_cuff_OtaBeginCommand ota_begin;
+        com_gymjot_cuff_OtaChunkCommand ota_chunk;
+        com_gymjot_cuff_OtaCompleteCommand ota_complete;
     } command;
 } com_gymjot_cuff_DeviceCommand;
 
@@ -112,6 +166,32 @@ typedef struct _com_gymjot_cuff_RepEvent {
     char station_name[65];
 } com_gymjot_cuff_RepEvent;
 
+typedef struct _com_gymjot_cuff_SnapshotEvent {
+    uint64_t device_id;
+    char name[65];
+    com_gymjot_cuff_DeviceMode mode;
+    bool test_mode;
+    float target_fps;
+    float loiter_fps;
+    float min_travel_cm;
+    uint32_t max_rep_idle_ms;
+    bool camera_ready;
+    bool ota_in_progress;
+    uint32_t active_tag_id;
+} com_gymjot_cuff_SnapshotEvent;
+
+typedef struct _com_gymjot_cuff_OtaStatusEvent {
+    com_gymjot_cuff_OtaPhase phase;
+    char message[97];
+    uint32_t bytes_transferred;
+    uint32_t total_bytes;
+    bool success;
+} com_gymjot_cuff_OtaStatusEvent;
+
+typedef struct _com_gymjot_cuff_PowerEvent {
+    char state[33];
+} com_gymjot_cuff_PowerEvent;
+
 typedef struct _com_gymjot_cuff_DeviceEvent {
     uint64_t timestamp_ms;
     pb_size_t which_event;
@@ -124,6 +204,9 @@ typedef struct _com_gymjot_cuff_DeviceEvent {
         com_gymjot_cuff_ScanEvent scan;
         com_gymjot_cuff_RepEvent rep;
         com_gymjot_cuff_StationReadyEvent station_ready;
+        com_gymjot_cuff_SnapshotEvent snapshot;
+        com_gymjot_cuff_OtaStatusEvent ota_status;
+        com_gymjot_cuff_PowerEvent power_event;
     } event;
 } com_gymjot_cuff_DeviceEvent;
 
@@ -136,6 +219,17 @@ extern "C" {
 #define _com_gymjot_cuff_DeviceMode_MIN com_gymjot_cuff_DeviceMode_DEVICE_MODE_IDLE
 #define _com_gymjot_cuff_DeviceMode_MAX com_gymjot_cuff_DeviceMode_DEVICE_MODE_LOITER
 #define _com_gymjot_cuff_DeviceMode_ARRAYSIZE ((com_gymjot_cuff_DeviceMode)(com_gymjot_cuff_DeviceMode_DEVICE_MODE_LOITER+1))
+
+#define _com_gymjot_cuff_OtaPhase_MIN com_gymjot_cuff_OtaPhase_OTA_PHASE_IDLE
+#define _com_gymjot_cuff_OtaPhase_MAX com_gymjot_cuff_OtaPhase_OTA_PHASE_ERROR
+#define _com_gymjot_cuff_OtaPhase_ARRAYSIZE ((com_gymjot_cuff_OtaPhase)(com_gymjot_cuff_OtaPhase_OTA_PHASE_ERROR+1))
+
+
+
+
+
+
+
 
 
 
@@ -156,6 +250,11 @@ extern "C" {
 #define com_gymjot_cuff_ScanEvent_mode_ENUMTYPE com_gymjot_cuff_DeviceMode
 
 
+#define com_gymjot_cuff_SnapshotEvent_mode_ENUMTYPE com_gymjot_cuff_DeviceMode
+
+#define com_gymjot_cuff_OtaStatusEvent_phase_ENUMTYPE com_gymjot_cuff_OtaPhase
+
+
 
 /* Initializer values for message structs */
 #define com_gymjot_cuff_MetadataEntry_init_default {"", ""}
@@ -165,6 +264,13 @@ extern "C" {
 #define com_gymjot_cuff_SetTargetFpsCommand_init_default {0}
 #define com_gymjot_cuff_StationUpdateCommand_init_default {0, "", false, com_gymjot_cuff_StationMetadata_init_default, 0, 0, 0, 0}
 #define com_gymjot_cuff_ResetRepsCommand_init_default {0}
+#define com_gymjot_cuff_PowerCommand_init_default {0}
+#define com_gymjot_cuff_FactoryResetCommand_init_default {0}
+#define com_gymjot_cuff_SnapshotRequestCommand_init_default {0}
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_init_default {0, 0, 0, 0, 0, 0, 0, 0}
+#define com_gymjot_cuff_OtaBeginCommand_init_default {0, 0, "", {{NULL}, NULL}}
+#define com_gymjot_cuff_OtaChunkCommand_init_default {0, {{NULL}, NULL}}
+#define com_gymjot_cuff_OtaCompleteCommand_init_default {0}
 #define com_gymjot_cuff_DeviceEvent_init_default {0, 0, {com_gymjot_cuff_BootEvent_init_default}}
 #define com_gymjot_cuff_BootEvent_init_default   {0, _com_gymjot_cuff_DeviceMode_MIN, 0}
 #define com_gymjot_cuff_StatusEvent_init_default {"", _com_gymjot_cuff_DeviceMode_MIN, 0, 0}
@@ -174,6 +280,9 @@ extern "C" {
 #define com_gymjot_cuff_StationReadyEvent_init_default {0}
 #define com_gymjot_cuff_ScanEvent_init_default   {0, 0, _com_gymjot_cuff_DeviceMode_MIN, 0, 0, ""}
 #define com_gymjot_cuff_RepEvent_init_default    {0, 0, 0, ""}
+#define com_gymjot_cuff_SnapshotEvent_init_default {0, "", _com_gymjot_cuff_DeviceMode_MIN, 0, 0, 0, 0, 0, 0, 0, 0}
+#define com_gymjot_cuff_OtaStatusEvent_init_default {_com_gymjot_cuff_OtaPhase_MIN, "", 0, 0, 0}
+#define com_gymjot_cuff_PowerEvent_init_default  {""}
 #define com_gymjot_cuff_MetadataEntry_init_zero  {"", ""}
 #define com_gymjot_cuff_StationMetadata_init_zero {0, {com_gymjot_cuff_MetadataEntry_init_zero, com_gymjot_cuff_MetadataEntry_init_zero, com_gymjot_cuff_MetadataEntry_init_zero, com_gymjot_cuff_MetadataEntry_init_zero, com_gymjot_cuff_MetadataEntry_init_zero, com_gymjot_cuff_MetadataEntry_init_zero, com_gymjot_cuff_MetadataEntry_init_zero, com_gymjot_cuff_MetadataEntry_init_zero, com_gymjot_cuff_MetadataEntry_init_zero, com_gymjot_cuff_MetadataEntry_init_zero}}
 #define com_gymjot_cuff_DeviceCommand_init_zero  {0, 0, {com_gymjot_cuff_SetTestModeCommand_init_zero}}
@@ -181,6 +290,13 @@ extern "C" {
 #define com_gymjot_cuff_SetTargetFpsCommand_init_zero {0}
 #define com_gymjot_cuff_StationUpdateCommand_init_zero {0, "", false, com_gymjot_cuff_StationMetadata_init_zero, 0, 0, 0, 0}
 #define com_gymjot_cuff_ResetRepsCommand_init_zero {0}
+#define com_gymjot_cuff_PowerCommand_init_zero   {0}
+#define com_gymjot_cuff_FactoryResetCommand_init_zero {0}
+#define com_gymjot_cuff_SnapshotRequestCommand_init_zero {0}
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_init_zero {0, 0, 0, 0, 0, 0, 0, 0}
+#define com_gymjot_cuff_OtaBeginCommand_init_zero {0, 0, "", {{NULL}, NULL}}
+#define com_gymjot_cuff_OtaChunkCommand_init_zero {0, {{NULL}, NULL}}
+#define com_gymjot_cuff_OtaCompleteCommand_init_zero {0}
 #define com_gymjot_cuff_DeviceEvent_init_zero    {0, 0, {com_gymjot_cuff_BootEvent_init_zero}}
 #define com_gymjot_cuff_BootEvent_init_zero      {0, _com_gymjot_cuff_DeviceMode_MIN, 0}
 #define com_gymjot_cuff_StatusEvent_init_zero    {"", _com_gymjot_cuff_DeviceMode_MIN, 0, 0}
@@ -190,6 +306,9 @@ extern "C" {
 #define com_gymjot_cuff_StationReadyEvent_init_zero {0}
 #define com_gymjot_cuff_ScanEvent_init_zero      {0, 0, _com_gymjot_cuff_DeviceMode_MIN, 0, 0, ""}
 #define com_gymjot_cuff_RepEvent_init_zero       {0, 0, 0, ""}
+#define com_gymjot_cuff_SnapshotEvent_init_zero  {0, "", _com_gymjot_cuff_DeviceMode_MIN, 0, 0, 0, 0, 0, 0, 0, 0}
+#define com_gymjot_cuff_OtaStatusEvent_init_zero {_com_gymjot_cuff_OtaPhase_MIN, "", 0, 0, 0}
+#define com_gymjot_cuff_PowerEvent_init_zero     {""}
 
 /* Field tags (for use in manual encoding/decoding) */
 #define com_gymjot_cuff_MetadataEntry_key_tag    1
@@ -204,11 +323,35 @@ extern "C" {
 #define com_gymjot_cuff_StationUpdateCommand_min_travel_cm_tag 5
 #define com_gymjot_cuff_StationUpdateCommand_set_fps_tag 6
 #define com_gymjot_cuff_StationUpdateCommand_fps_tag 7
+#define com_gymjot_cuff_PowerCommand_shutdown_tag 1
+#define com_gymjot_cuff_FactoryResetCommand_confirm_tag 1
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_set_target_fps_tag 1
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_target_fps_tag 2
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_set_loiter_fps_tag 3
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_loiter_fps_tag 4
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_set_min_travel_cm_tag 5
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_min_travel_cm_tag 6
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_set_max_rep_idle_ms_tag 7
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_max_rep_idle_ms_tag 8
+#define com_gymjot_cuff_OtaBeginCommand_total_size_tag 1
+#define com_gymjot_cuff_OtaBeginCommand_chunk_size_tag 2
+#define com_gymjot_cuff_OtaBeginCommand_version_tag 3
+#define com_gymjot_cuff_OtaBeginCommand_sha256_tag 4
+#define com_gymjot_cuff_OtaChunkCommand_offset_tag 1
+#define com_gymjot_cuff_OtaChunkCommand_data_tag 2
+#define com_gymjot_cuff_OtaCompleteCommand_apply_tag 1
 #define com_gymjot_cuff_DeviceCommand_timestamp_ms_tag 1
 #define com_gymjot_cuff_DeviceCommand_set_test_mode_tag 10
 #define com_gymjot_cuff_DeviceCommand_set_target_fps_tag 11
 #define com_gymjot_cuff_DeviceCommand_station_update_tag 12
 #define com_gymjot_cuff_DeviceCommand_reset_reps_tag 13
+#define com_gymjot_cuff_DeviceCommand_power_tag  14
+#define com_gymjot_cuff_DeviceCommand_factory_reset_tag 15
+#define com_gymjot_cuff_DeviceCommand_snapshot_request_tag 16
+#define com_gymjot_cuff_DeviceCommand_update_device_config_tag 17
+#define com_gymjot_cuff_DeviceCommand_ota_begin_tag 18
+#define com_gymjot_cuff_DeviceCommand_ota_chunk_tag 19
+#define com_gymjot_cuff_DeviceCommand_ota_complete_tag 20
 #define com_gymjot_cuff_BootEvent_test_mode_tag  1
 #define com_gymjot_cuff_BootEvent_mode_tag       2
 #define com_gymjot_cuff_BootEvent_fps_tag        3
@@ -234,6 +377,23 @@ extern "C" {
 #define com_gymjot_cuff_RepEvent_rep_count_tag   2
 #define com_gymjot_cuff_RepEvent_has_station_name_tag 3
 #define com_gymjot_cuff_RepEvent_station_name_tag 4
+#define com_gymjot_cuff_SnapshotEvent_device_id_tag 1
+#define com_gymjot_cuff_SnapshotEvent_name_tag   2
+#define com_gymjot_cuff_SnapshotEvent_mode_tag   3
+#define com_gymjot_cuff_SnapshotEvent_test_mode_tag 4
+#define com_gymjot_cuff_SnapshotEvent_target_fps_tag 5
+#define com_gymjot_cuff_SnapshotEvent_loiter_fps_tag 6
+#define com_gymjot_cuff_SnapshotEvent_min_travel_cm_tag 7
+#define com_gymjot_cuff_SnapshotEvent_max_rep_idle_ms_tag 8
+#define com_gymjot_cuff_SnapshotEvent_camera_ready_tag 9
+#define com_gymjot_cuff_SnapshotEvent_ota_in_progress_tag 10
+#define com_gymjot_cuff_SnapshotEvent_active_tag_id_tag 11
+#define com_gymjot_cuff_OtaStatusEvent_phase_tag 1
+#define com_gymjot_cuff_OtaStatusEvent_message_tag 2
+#define com_gymjot_cuff_OtaStatusEvent_bytes_transferred_tag 3
+#define com_gymjot_cuff_OtaStatusEvent_total_bytes_tag 4
+#define com_gymjot_cuff_OtaStatusEvent_success_tag 5
+#define com_gymjot_cuff_PowerEvent_state_tag     1
 #define com_gymjot_cuff_DeviceEvent_timestamp_ms_tag 1
 #define com_gymjot_cuff_DeviceEvent_boot_tag     10
 #define com_gymjot_cuff_DeviceEvent_status_tag   11
@@ -243,6 +403,9 @@ extern "C" {
 #define com_gymjot_cuff_DeviceEvent_scan_tag     15
 #define com_gymjot_cuff_DeviceEvent_rep_tag      16
 #define com_gymjot_cuff_DeviceEvent_station_ready_tag 17
+#define com_gymjot_cuff_DeviceEvent_snapshot_tag 18
+#define com_gymjot_cuff_DeviceEvent_ota_status_tag 19
+#define com_gymjot_cuff_DeviceEvent_power_event_tag 20
 
 /* Struct field encoding specification for nanopb */
 #define com_gymjot_cuff_MetadataEntry_FIELDLIST(X, a) \
@@ -262,13 +425,27 @@ X(a, STATIC,   SINGULAR, UINT64,   timestamp_ms,      1) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (command,set_test_mode,command.set_test_mode),  10) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (command,set_target_fps,command.set_target_fps),  11) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (command,station_update,command.station_update),  12) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (command,reset_reps,command.reset_reps),  13)
+X(a, STATIC,   ONEOF,    MESSAGE,  (command,reset_reps,command.reset_reps),  13) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (command,power,command.power),  14) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (command,factory_reset,command.factory_reset),  15) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (command,snapshot_request,command.snapshot_request),  16) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (command,update_device_config,command.update_device_config),  17) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (command,ota_begin,command.ota_begin),  18) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (command,ota_chunk,command.ota_chunk),  19) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (command,ota_complete,command.ota_complete),  20)
 #define com_gymjot_cuff_DeviceCommand_CALLBACK NULL
 #define com_gymjot_cuff_DeviceCommand_DEFAULT NULL
 #define com_gymjot_cuff_DeviceCommand_command_set_test_mode_MSGTYPE com_gymjot_cuff_SetTestModeCommand
 #define com_gymjot_cuff_DeviceCommand_command_set_target_fps_MSGTYPE com_gymjot_cuff_SetTargetFpsCommand
 #define com_gymjot_cuff_DeviceCommand_command_station_update_MSGTYPE com_gymjot_cuff_StationUpdateCommand
 #define com_gymjot_cuff_DeviceCommand_command_reset_reps_MSGTYPE com_gymjot_cuff_ResetRepsCommand
+#define com_gymjot_cuff_DeviceCommand_command_power_MSGTYPE com_gymjot_cuff_PowerCommand
+#define com_gymjot_cuff_DeviceCommand_command_factory_reset_MSGTYPE com_gymjot_cuff_FactoryResetCommand
+#define com_gymjot_cuff_DeviceCommand_command_snapshot_request_MSGTYPE com_gymjot_cuff_SnapshotRequestCommand
+#define com_gymjot_cuff_DeviceCommand_command_update_device_config_MSGTYPE com_gymjot_cuff_UpdateDeviceConfigCommand
+#define com_gymjot_cuff_DeviceCommand_command_ota_begin_MSGTYPE com_gymjot_cuff_OtaBeginCommand
+#define com_gymjot_cuff_DeviceCommand_command_ota_chunk_MSGTYPE com_gymjot_cuff_OtaChunkCommand
+#define com_gymjot_cuff_DeviceCommand_command_ota_complete_MSGTYPE com_gymjot_cuff_OtaCompleteCommand
 
 #define com_gymjot_cuff_SetTestModeCommand_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, BOOL,     enabled,           1)
@@ -297,6 +474,52 @@ X(a, STATIC,   SINGULAR, FLOAT,    fps,               7)
 #define com_gymjot_cuff_ResetRepsCommand_CALLBACK NULL
 #define com_gymjot_cuff_ResetRepsCommand_DEFAULT NULL
 
+#define com_gymjot_cuff_PowerCommand_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     shutdown,          1)
+#define com_gymjot_cuff_PowerCommand_CALLBACK NULL
+#define com_gymjot_cuff_PowerCommand_DEFAULT NULL
+
+#define com_gymjot_cuff_FactoryResetCommand_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     confirm,           1)
+#define com_gymjot_cuff_FactoryResetCommand_CALLBACK NULL
+#define com_gymjot_cuff_FactoryResetCommand_DEFAULT NULL
+
+#define com_gymjot_cuff_SnapshotRequestCommand_FIELDLIST(X, a) \
+
+#define com_gymjot_cuff_SnapshotRequestCommand_CALLBACK NULL
+#define com_gymjot_cuff_SnapshotRequestCommand_DEFAULT NULL
+
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     set_target_fps,    1) \
+X(a, STATIC,   SINGULAR, FLOAT,    target_fps,        2) \
+X(a, STATIC,   SINGULAR, BOOL,     set_loiter_fps,    3) \
+X(a, STATIC,   SINGULAR, FLOAT,    loiter_fps,        4) \
+X(a, STATIC,   SINGULAR, BOOL,     set_min_travel_cm,   5) \
+X(a, STATIC,   SINGULAR, FLOAT,    min_travel_cm,     6) \
+X(a, STATIC,   SINGULAR, BOOL,     set_max_rep_idle_ms,   7) \
+X(a, STATIC,   SINGULAR, UINT32,   max_rep_idle_ms,   8)
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_CALLBACK NULL
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_DEFAULT NULL
+
+#define com_gymjot_cuff_OtaBeginCommand_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   total_size,        1) \
+X(a, STATIC,   SINGULAR, UINT32,   chunk_size,        2) \
+X(a, STATIC,   SINGULAR, STRING,   version,           3) \
+X(a, CALLBACK, SINGULAR, BYTES,    sha256,            4)
+#define com_gymjot_cuff_OtaBeginCommand_CALLBACK pb_default_field_callback
+#define com_gymjot_cuff_OtaBeginCommand_DEFAULT NULL
+
+#define com_gymjot_cuff_OtaChunkCommand_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   offset,            1) \
+X(a, CALLBACK, SINGULAR, BYTES,    data,              2)
+#define com_gymjot_cuff_OtaChunkCommand_CALLBACK pb_default_field_callback
+#define com_gymjot_cuff_OtaChunkCommand_DEFAULT NULL
+
+#define com_gymjot_cuff_OtaCompleteCommand_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     apply,             1)
+#define com_gymjot_cuff_OtaCompleteCommand_CALLBACK NULL
+#define com_gymjot_cuff_OtaCompleteCommand_DEFAULT NULL
+
 #define com_gymjot_cuff_DeviceEvent_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT64,   timestamp_ms,      1) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (event,boot,event.boot),  10) \
@@ -306,7 +529,10 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (event,station_request,event.station_request)
 X(a, STATIC,   ONEOF,    MESSAGE,  (event,station_broadcast,event.station_broadcast),  14) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (event,scan,event.scan),  15) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (event,rep,event.rep),  16) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (event,station_ready,event.station_ready),  17)
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,station_ready,event.station_ready),  17) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,snapshot,event.snapshot),  18) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,ota_status,event.ota_status),  19) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (event,power_event,event.power_event),  20)
 #define com_gymjot_cuff_DeviceEvent_CALLBACK NULL
 #define com_gymjot_cuff_DeviceEvent_DEFAULT NULL
 #define com_gymjot_cuff_DeviceEvent_event_boot_MSGTYPE com_gymjot_cuff_BootEvent
@@ -317,6 +543,9 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (event,station_ready,event.station_ready),  1
 #define com_gymjot_cuff_DeviceEvent_event_scan_MSGTYPE com_gymjot_cuff_ScanEvent
 #define com_gymjot_cuff_DeviceEvent_event_rep_MSGTYPE com_gymjot_cuff_RepEvent
 #define com_gymjot_cuff_DeviceEvent_event_station_ready_MSGTYPE com_gymjot_cuff_StationReadyEvent
+#define com_gymjot_cuff_DeviceEvent_event_snapshot_MSGTYPE com_gymjot_cuff_SnapshotEvent
+#define com_gymjot_cuff_DeviceEvent_event_ota_status_MSGTYPE com_gymjot_cuff_OtaStatusEvent
+#define com_gymjot_cuff_DeviceEvent_event_power_event_MSGTYPE com_gymjot_cuff_PowerEvent
 
 #define com_gymjot_cuff_BootEvent_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, BOOL,     test_mode,         1) \
@@ -376,6 +605,35 @@ X(a, STATIC,   SINGULAR, STRING,   station_name,      4)
 #define com_gymjot_cuff_RepEvent_CALLBACK NULL
 #define com_gymjot_cuff_RepEvent_DEFAULT NULL
 
+#define com_gymjot_cuff_SnapshotEvent_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT64,   device_id,         1) \
+X(a, STATIC,   SINGULAR, STRING,   name,              2) \
+X(a, STATIC,   SINGULAR, UENUM,    mode,              3) \
+X(a, STATIC,   SINGULAR, BOOL,     test_mode,         4) \
+X(a, STATIC,   SINGULAR, FLOAT,    target_fps,        5) \
+X(a, STATIC,   SINGULAR, FLOAT,    loiter_fps,        6) \
+X(a, STATIC,   SINGULAR, FLOAT,    min_travel_cm,     7) \
+X(a, STATIC,   SINGULAR, UINT32,   max_rep_idle_ms,   8) \
+X(a, STATIC,   SINGULAR, BOOL,     camera_ready,      9) \
+X(a, STATIC,   SINGULAR, BOOL,     ota_in_progress,  10) \
+X(a, STATIC,   SINGULAR, UINT32,   active_tag_id,    11)
+#define com_gymjot_cuff_SnapshotEvent_CALLBACK NULL
+#define com_gymjot_cuff_SnapshotEvent_DEFAULT NULL
+
+#define com_gymjot_cuff_OtaStatusEvent_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    phase,             1) \
+X(a, STATIC,   SINGULAR, STRING,   message,           2) \
+X(a, STATIC,   SINGULAR, UINT32,   bytes_transferred,   3) \
+X(a, STATIC,   SINGULAR, UINT32,   total_bytes,       4) \
+X(a, STATIC,   SINGULAR, BOOL,     success,           5)
+#define com_gymjot_cuff_OtaStatusEvent_CALLBACK NULL
+#define com_gymjot_cuff_OtaStatusEvent_DEFAULT NULL
+
+#define com_gymjot_cuff_PowerEvent_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, STRING,   state,             1)
+#define com_gymjot_cuff_PowerEvent_CALLBACK NULL
+#define com_gymjot_cuff_PowerEvent_DEFAULT NULL
+
 extern const pb_msgdesc_t com_gymjot_cuff_MetadataEntry_msg;
 extern const pb_msgdesc_t com_gymjot_cuff_StationMetadata_msg;
 extern const pb_msgdesc_t com_gymjot_cuff_DeviceCommand_msg;
@@ -383,6 +641,13 @@ extern const pb_msgdesc_t com_gymjot_cuff_SetTestModeCommand_msg;
 extern const pb_msgdesc_t com_gymjot_cuff_SetTargetFpsCommand_msg;
 extern const pb_msgdesc_t com_gymjot_cuff_StationUpdateCommand_msg;
 extern const pb_msgdesc_t com_gymjot_cuff_ResetRepsCommand_msg;
+extern const pb_msgdesc_t com_gymjot_cuff_PowerCommand_msg;
+extern const pb_msgdesc_t com_gymjot_cuff_FactoryResetCommand_msg;
+extern const pb_msgdesc_t com_gymjot_cuff_SnapshotRequestCommand_msg;
+extern const pb_msgdesc_t com_gymjot_cuff_UpdateDeviceConfigCommand_msg;
+extern const pb_msgdesc_t com_gymjot_cuff_OtaBeginCommand_msg;
+extern const pb_msgdesc_t com_gymjot_cuff_OtaChunkCommand_msg;
+extern const pb_msgdesc_t com_gymjot_cuff_OtaCompleteCommand_msg;
 extern const pb_msgdesc_t com_gymjot_cuff_DeviceEvent_msg;
 extern const pb_msgdesc_t com_gymjot_cuff_BootEvent_msg;
 extern const pb_msgdesc_t com_gymjot_cuff_StatusEvent_msg;
@@ -392,6 +657,9 @@ extern const pb_msgdesc_t com_gymjot_cuff_StationBroadcastEvent_msg;
 extern const pb_msgdesc_t com_gymjot_cuff_StationReadyEvent_msg;
 extern const pb_msgdesc_t com_gymjot_cuff_ScanEvent_msg;
 extern const pb_msgdesc_t com_gymjot_cuff_RepEvent_msg;
+extern const pb_msgdesc_t com_gymjot_cuff_SnapshotEvent_msg;
+extern const pb_msgdesc_t com_gymjot_cuff_OtaStatusEvent_msg;
+extern const pb_msgdesc_t com_gymjot_cuff_PowerEvent_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define com_gymjot_cuff_MetadataEntry_fields &com_gymjot_cuff_MetadataEntry_msg
@@ -401,6 +669,13 @@ extern const pb_msgdesc_t com_gymjot_cuff_RepEvent_msg;
 #define com_gymjot_cuff_SetTargetFpsCommand_fields &com_gymjot_cuff_SetTargetFpsCommand_msg
 #define com_gymjot_cuff_StationUpdateCommand_fields &com_gymjot_cuff_StationUpdateCommand_msg
 #define com_gymjot_cuff_ResetRepsCommand_fields &com_gymjot_cuff_ResetRepsCommand_msg
+#define com_gymjot_cuff_PowerCommand_fields &com_gymjot_cuff_PowerCommand_msg
+#define com_gymjot_cuff_FactoryResetCommand_fields &com_gymjot_cuff_FactoryResetCommand_msg
+#define com_gymjot_cuff_SnapshotRequestCommand_fields &com_gymjot_cuff_SnapshotRequestCommand_msg
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_fields &com_gymjot_cuff_UpdateDeviceConfigCommand_msg
+#define com_gymjot_cuff_OtaBeginCommand_fields &com_gymjot_cuff_OtaBeginCommand_msg
+#define com_gymjot_cuff_OtaChunkCommand_fields &com_gymjot_cuff_OtaChunkCommand_msg
+#define com_gymjot_cuff_OtaCompleteCommand_fields &com_gymjot_cuff_OtaCompleteCommand_msg
 #define com_gymjot_cuff_DeviceEvent_fields &com_gymjot_cuff_DeviceEvent_msg
 #define com_gymjot_cuff_BootEvent_fields &com_gymjot_cuff_BootEvent_msg
 #define com_gymjot_cuff_StatusEvent_fields &com_gymjot_cuff_StatusEvent_msg
@@ -410,18 +685,30 @@ extern const pb_msgdesc_t com_gymjot_cuff_RepEvent_msg;
 #define com_gymjot_cuff_StationReadyEvent_fields &com_gymjot_cuff_StationReadyEvent_msg
 #define com_gymjot_cuff_ScanEvent_fields &com_gymjot_cuff_ScanEvent_msg
 #define com_gymjot_cuff_RepEvent_fields &com_gymjot_cuff_RepEvent_msg
+#define com_gymjot_cuff_SnapshotEvent_fields &com_gymjot_cuff_SnapshotEvent_msg
+#define com_gymjot_cuff_OtaStatusEvent_fields &com_gymjot_cuff_OtaStatusEvent_msg
+#define com_gymjot_cuff_PowerEvent_fields &com_gymjot_cuff_PowerEvent_msg
 
 /* Maximum encoded size of messages (where known) */
-#define COM_GYMJOT_CUFF_PROTO_CUFF_PB_H_MAX_SIZE com_gymjot_cuff_DeviceCommand_size
+/* com_gymjot_cuff_DeviceCommand_size depends on runtime parameters */
+/* com_gymjot_cuff_OtaBeginCommand_size depends on runtime parameters */
+/* com_gymjot_cuff_OtaChunkCommand_size depends on runtime parameters */
+#define COM_GYMJOT_CUFF_PROTO_CUFF_PB_H_MAX_SIZE com_gymjot_cuff_DeviceEvent_size
 #define com_gymjot_cuff_BootEvent_size           9
-#define com_gymjot_cuff_DeviceCommand_size       1453
 #define com_gymjot_cuff_DeviceEvent_size         1441
+#define com_gymjot_cuff_FactoryResetCommand_size 2
 #define com_gymjot_cuff_MetadataEntry_size       132
+#define com_gymjot_cuff_OtaCompleteCommand_size  2
+#define com_gymjot_cuff_OtaStatusEvent_size      114
+#define com_gymjot_cuff_PowerCommand_size        2
+#define com_gymjot_cuff_PowerEvent_size          34
 #define com_gymjot_cuff_RepEvent_size            80
 #define com_gymjot_cuff_ResetRepsCommand_size    0
 #define com_gymjot_cuff_ScanEvent_size           86
 #define com_gymjot_cuff_SetTargetFpsCommand_size 5
 #define com_gymjot_cuff_SetTestModeCommand_size  2
+#define com_gymjot_cuff_SnapshotEvent_size       112
+#define com_gymjot_cuff_SnapshotRequestCommand_size 0
 #define com_gymjot_cuff_StationBroadcastEvent_size 1427
 #define com_gymjot_cuff_StationMetadata_size     1350
 #define com_gymjot_cuff_StationReadyEvent_size   6
@@ -429,6 +716,7 @@ extern const pb_msgdesc_t com_gymjot_cuff_RepEvent_msg;
 #define com_gymjot_cuff_StationUpdateCommand_size 1439
 #define com_gymjot_cuff_StatusEvent_size         43
 #define com_gymjot_cuff_TagEvent_size            8
+#define com_gymjot_cuff_UpdateDeviceConfigCommand_size 29
 
 #ifdef __cplusplus
 } /* extern "C" */

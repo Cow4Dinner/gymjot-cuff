@@ -23,6 +23,14 @@ enum DeviceMode {
   DEVICE_MODE_LOITER = 3;
 }
 
+enum OtaPhase {
+  OTA_PHASE_IDLE = 0;
+  OTA_PHASE_PREPARING = 1;
+  OTA_PHASE_TRANSFER = 2;
+  OTA_PHASE_APPLYING = 3;
+  OTA_PHASE_ERROR = 4;
+}
+
 message DeviceCommand {
   uint64 timestamp_ms = 1;
   oneof command {
@@ -30,6 +38,13 @@ message DeviceCommand {
     SetTargetFpsCommand set_target_fps = 11;
     StationUpdateCommand station_update = 12;
     ResetRepsCommand reset_reps = 13;
+    PowerCommand power = 14;
+    FactoryResetCommand factory_reset = 15;
+    SnapshotRequestCommand snapshot_request = 16;
+    UpdateDeviceConfigCommand update_device_config = 17;
+    OtaBeginCommand ota_begin = 18;
+    OtaChunkCommand ota_chunk = 19;
+    OtaCompleteCommand ota_complete = 20;
   }
 }
 
@@ -53,6 +68,43 @@ message StationUpdateCommand {
 
 message ResetRepsCommand {}
 
+message PowerCommand {
+  bool shutdown = 1;
+}
+
+message FactoryResetCommand {
+  bool confirm = 1;
+}
+
+message SnapshotRequestCommand {}
+
+message UpdateDeviceConfigCommand {
+  bool set_target_fps = 1;
+  float target_fps = 2;
+  bool set_loiter_fps = 3;
+  float loiter_fps = 4;
+  bool set_min_travel_cm = 5;
+  float min_travel_cm = 6;
+  bool set_max_rep_idle_ms = 7;
+  uint32 max_rep_idle_ms = 8;
+}
+
+message OtaBeginCommand {
+  uint32 total_size = 1;
+  uint32 chunk_size = 2;
+  string version = 3;
+  bytes sha256 = 4;
+}
+
+message OtaChunkCommand {
+  uint32 offset = 1;
+  bytes data = 2;
+}
+
+message OtaCompleteCommand {
+  bool apply = 1;
+}
+
 message DeviceEvent {
   uint64 timestamp_ms = 1;
   oneof event {
@@ -64,6 +116,9 @@ message DeviceEvent {
     ScanEvent scan = 15;
     RepEvent rep = 16;
     StationReadyEvent station_ready = 17;
+    SnapshotEvent snapshot = 18;
+    OtaStatusEvent ota_status = 19;
+    PowerEvent power_event = 20;
   }
 }
 
@@ -114,4 +169,30 @@ message RepEvent {
   uint32 rep_count = 2;
   bool has_station_name = 3;
   string station_name = 4;
+}
+
+message SnapshotEvent {
+  uint64 device_id = 1;
+  string name = 2;
+  DeviceMode mode = 3;
+  bool test_mode = 4;
+  float target_fps = 5;
+  float loiter_fps = 6;
+  float min_travel_cm = 7;
+  uint32 max_rep_idle_ms = 8;
+  bool camera_ready = 9;
+  bool ota_in_progress = 10;
+  uint32 active_tag_id = 11;
+}
+
+message OtaStatusEvent {
+  OtaPhase phase = 1;
+  string message = 2;
+  uint32 bytes_transferred = 3;
+  uint32 total_bytes = 4;
+  bool success = 5;
+}
+
+message PowerEvent {
+  string state = 1;
 }

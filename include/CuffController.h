@@ -42,6 +42,8 @@ public:
     void setMinTravel(float travelCm);
     void setMaxIdleMs(uint64_t maxIdleMs);
     bool update(float distanceCm, uint64_t nowMs);
+    float minTravelCm() const { return minTravelCm_; }
+    uint64_t maxIdleMs() const { return maxRepIdleMs_; }
 
 private:
     Phase phase_ = Phase::WaitingBottom;
@@ -102,13 +104,24 @@ public:
     void setTargetFps(float fps, uint64_t nowMs);
     float targetFps() const { return targetFps_; }
 
+    void setLoiterFps(float fps, uint64_t nowMs);
+    float loiterFps() const { return config_.loiterFps; }
+
+    void setMaxRepIdleMs(uint32_t value, uint64_t nowMs);
+    uint32_t maxRepIdleMs() const { return config_.maxRepIdleMs; }
+
+    void setMinTravel(float cm, uint64_t nowMs);
+    float minTravelCm() const { return repTracker_.minTravelCm(); }
+
     void resetReps(uint64_t nowMs);
 
     DeviceMode mode() const { return deviceMode_; }
     float frameIntervalMs() const;
 
     StationSession& session() { return session_; }
+    const StationSession& session() const { return session_; }
     RepTracker& repTracker() { return repTracker_; }
+    const RepTracker& repTracker() const { return repTracker_; }
     TestModeSimulator& testSimulator() { return testSimulator_; }
 
     void handleDetection(const AprilTagDetection& detection, uint64_t nowMs);

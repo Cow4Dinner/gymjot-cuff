@@ -1,5 +1,6 @@
 #include "CuffController.h"
 
+#include "PersistentConfig.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -182,6 +183,24 @@ CuffController::CuffController(const ControllerConfig& config, SendCallback send
     targetFps_ = config_.defaultFps;
     repTracker_.setMinTravel(config_.defaultMinTravelCm);
     repTracker_.setMaxIdleMs(config_.maxRepIdleMs);
+
+    PersistentSettings stored;
+    if (loadPersistentSettings(stored)) {
+        if (stored.hasTargetFps) {
+            targetFps_ = stored.targetFps;
+        }
+        if (stored.hasLoiterFps) {
+            config_.loiterFps = stored.loiterFps;
+        }
+        if (stored.hasMinTravelCm) {
+            repTracker_.setMinTravel(stored.minTravelCm);
+        }
+        if (stored.hasMaxRepIdleMs) {
+            config_.maxRepIdleMs = stored.maxRepIdleMs;
+            repTracker_.setMaxIdleMs(stored.maxRepIdleMs);
+        }
+    }
+
     if (testMode_) {
         testSimulator_.reset();
     }
@@ -205,7 +224,33 @@ void CuffController::setTestMode(bool enabled, uint64_t nowMs) {
 void CuffController::setTargetFps(float fps, uint64_t nowMs) {
     if (fps > 0.1f && fps <= 30.0f) {
         targetFps_ = fps;
+        storeTargetFps(fps);
         notifyStatus("fpsUpdated", nowMs);
+    }
+}
+
+void CuffController::setLoiterFps(float fps, uint64_t nowMs) {
+    if (fps > 0.05f && fps <= 10.0f) {
+        config_.loiterFps = fps;
+        storeLoiterFps(fps);
+        notifyStatus("loiterFpsUpdated", nowMs);
+    }
+}
+
+void CuffController::setMaxRepIdleMs(uint32_t value, uint64_t nowMs) {
+    if (value >= 500 && value <= 60000) {
+        config_.maxRepIdleMs = value;
+        repTracker_.setMaxIdleMs(value);
+        storeMaxRepIdleMs(value);
+        notifyStatus("repIdleUpdated", nowMs);
+    }
+}
+
+void CuffController::setMinTravel(float cm, uint64_t nowMs) {
+    if (cm >= 1.0f && cm <= 100.0f) {
+        repTracker_.setMinTravel(cm);
+        storeMinTravelCm(cm);
+        notifyStatus("minTravelUpdated", nowMs);
     }
 }
 
@@ -309,7 +354,7 @@ void CuffController::handleStationPayload(const StationPayload& payload, uint64_
     }
 
     if (payload.minTravelCm.has_value()) {
-        repTracker_.setMinTravel(payload.minTravelCm.value());
+        setMinTravel(payload.minTravelCm.value(), nowMs);
     }
     if (payload.fps.has_value()) {
         setTargetFps(payload.fps.value(), nowMs);

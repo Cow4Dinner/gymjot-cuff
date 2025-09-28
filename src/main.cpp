@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <cmath>
+#include <cstdio>
 
 extern "C" {
 #include "apriltag.h"
@@ -21,6 +22,10 @@ extern "C" {
 #include "esp_camera.h"
 #include "Config.h"
 #include "CuffController.h"
+#include "DeviceIdentity.h"
+#include "PersistentConfig.h"
+
+#include <esp_sleep.h>
 
 // ESP32-CAM (AI Thinker) pin mapping
 #define PWDN_GPIO_NUM     32
@@ -47,10 +52,19 @@ using gymjot::StationPayload;
 
 static NimBLEServer* g_server = nullptr;
 static NimBLECharacteristic* g_tx = nullptr;
+static NimBLECharacteristic* g_snapshotChar = nullptr;
+static NimBLECharacteristic* g_infoChar = nullptr;
+static NimBLECharacteristic* g_commandChar = nullptr;
+static NimBLECharacteristic* g_otaChar = nullptr;
 static std::unique_ptr<CuffController> g_controller;
 static bool g_cameraReady = false;
 static apriltag_family_t* g_tagFamily = nullptr;
 static apriltag_detector_t* g_tagDetector = nullptr;
+static bool g_otaInProgress = false;
+static uint32_t g_otaTotalBytes = 0;
+static uint32_t g_otaReceivedBytes = 0;
+static const gymjot::DeviceIdentity* g_identity = nullptr;
+static constexpr const char* kFirmwareVersion = "0.1.0";
 
 static constexpr size_t kProtoBufferSize = 512;
 static constexpr size_t kLengthPrefixBytes = 2;
@@ -79,6 +93,47 @@ static gymjot::MetadataList metadataFromProto(const com_gymjot_cuff_StationMetad
     return result;
 }
 
+static bool encodeWithLength(const pb_msgdesc_t* fields, const void* src, std::array<uint8_t, kLengthPrefixBytes + kProtoBufferSize>& buffer, size_t& totalLen) {
+    pb_ostream_t stream = pb_ostream_from_buffer(buffer.data() + kLengthPrefixBytes, kProtoBufferSize);
+    if (!pb_encode(&stream, fields, src)) {
+        Serial.print("encode error: ");
+        Serial.println(PB_GET_ERROR(&stream));
+        return false;
+    }
+    const size_t payloadLen = stream.bytes_written;
+    if (payloadLen > 0xFFFF) {
+        Serial.println("encode error: payload too large");
+        return false;
+    }
+    buffer[0] = static_cast<uint8_t>(payloadLen & 0xFF);
+    buffer[1] = static_cast<uint8_t>((payloadLen >> 8) & 0xFF);
+    totalLen = payloadLen + kLengthPrefixBytes;
+    return true;
+}
+
+static void updateSnapshotCharacteristic(uint64_t nowMs);
+static void sendSnapshotEvent(uint64_t nowMs);
+static void sendOtaStatus(com_gymjot_cuff_OtaPhase phase, const char* message, bool success, uint32_t transferred = 0, uint32_t total = 0);
+static void sendPowerEvent(const char* state, uint64_t nowMs);
+static std::string buildInfoString() {
+    if (!g_identity) {
+        g_identity = &gymjot::deviceIdentity();
+    }
+    char idBuffer[21] = {0};
+    std::snprintf(idBuffer, sizeof(idBuffer), "%016llX", static_cast<unsigned long long>(g_identity->deviceId));
+    std::string info = "name=";
+    info += g_identity->name;
+    info.push_back('\n');
+    info += "id=0x";
+    info += idBuffer;
+    info.push_back('\n');
+    info += "fw=";
+    info += kFirmwareVersion;
+    info.push_back('\n');
+    info += "ota=";
+    info += g_otaInProgress ? "true" : "false";
+    return info;
+}
 static bool sendEvent(const com_gymjot_cuff_DeviceEvent& event);
 static void processCommand(const uint8_t* data, size_t len);
 
@@ -108,28 +163,126 @@ class RxCallback : public NimBLECharacteristicCallbacks {
     }
 };
 
+class SnapshotCallback : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
+        updateSnapshotCharacteristic(millis());
+        if (g_snapshotChar && g_snapshotChar != characteristic) {
+            characteristic->setValue(g_snapshotChar->getValue());
+        }
+    }
+};
+
+class InfoCallback : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
+        if (!g_identity) {
+            g_identity = &gymjot::deviceIdentity();
+        }
+        std::string info = buildInfoString();
+        characteristic->setValue(info);
+    }
+};
+
+
+
+static void fillSnapshot(com_gymjot_cuff_SnapshotEvent& snapshot) {
+    if (!g_identity) {
+        g_identity = &gymjot::deviceIdentity();
+    }
+    snapshot.device_id = g_identity->deviceId;
+    std::memset(snapshot.name, 0, sizeof(snapshot.name));
+    std::strncpy(snapshot.name, g_identity->name.c_str(), sizeof(snapshot.name) - 1);
+    snapshot.camera_ready = g_cameraReady;
+    snapshot.ota_in_progress = g_otaInProgress;
+
+    if (g_controller) {
+        snapshot.mode = toProtoMode(g_controller->mode());
+        snapshot.test_mode = g_controller->testMode();
+        snapshot.target_fps = g_controller->targetFps();
+        snapshot.loiter_fps = g_controller->loiterFps();
+        snapshot.min_travel_cm = g_controller->minTravelCm();
+        snapshot.max_rep_idle_ms = g_controller->maxRepIdleMs();
+        snapshot.active_tag_id = g_controller->session().tagId;
+    } else {
+        snapshot.mode = com_gymjot_cuff_DeviceMode_DEVICE_MODE_IDLE;
+        snapshot.test_mode = false;
+        snapshot.target_fps = DEFAULT_FPS;
+        snapshot.loiter_fps = LOITER_FPS;
+        snapshot.min_travel_cm = DEFAULT_MIN_REP_TRAVEL_CM;
+        snapshot.max_rep_idle_ms = DEFAULT_MAX_REP_IDLE_MS;
+        snapshot.active_tag_id = 0;
+    }
+}
+
+static void updateSnapshotCharacteristic(uint64_t nowMs) {
+    (void)nowMs;
+    if (!g_snapshotChar) {
+        return;
+    }
+    com_gymjot_cuff_SnapshotEvent snapshot = com_gymjot_cuff_SnapshotEvent_init_default;
+    fillSnapshot(snapshot);
+    std::array<uint8_t, kLengthPrefixBytes + kProtoBufferSize> buffer{};
+    size_t totalLen = 0;
+    if (!encodeWithLength(com_gymjot_cuff_SnapshotEvent_fields, &snapshot, buffer, totalLen)) {
+        return;
+    }
+    g_snapshotChar->setValue(buffer.data(), totalLen);
+}
+
+static void sendSnapshotEvent(uint64_t nowMs) {
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_snapshot_tag;
+    fillSnapshot(evt.event.snapshot);
+    sendEvent(evt);
+}
+
+static void sendOtaStatus(com_gymjot_cuff_OtaPhase phase, const char* message, bool success, uint32_t transferred, uint32_t total) {
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = millis();
+    evt.which_event = com_gymjot_cuff_DeviceEvent_ota_status_tag;
+    evt.event.ota_status.phase = phase;
+    evt.event.ota_status.success = success;
+    evt.event.ota_status.bytes_transferred = transferred;
+    evt.event.ota_status.total_bytes = total;
+    if (message) {
+        std::memset(evt.event.ota_status.message, 0, sizeof(evt.event.ota_status.message));
+        std::strncpy(evt.event.ota_status.message, message, sizeof(evt.event.ota_status.message) - 1);
+    }
+    sendEvent(evt);
+}
+
+static void sendPowerEvent(const char* state, uint64_t nowMs) {
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_power_event_tag;
+    if (state) {
+        std::memset(evt.event.power_event.state, 0, sizeof(evt.event.power_event.state));
+        std::strncpy(evt.event.power_event.state, state, sizeof(evt.event.power_event.state) - 1);
+    }
+    sendEvent(evt);
+}
+
+class OtaCallback : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
+        const std::string& value = characteristic->getValue();
+        g_otaInProgress = true;
+        g_otaReceivedBytes += static_cast<uint32_t>(value.size());
+        updateSnapshotCharacteristic(millis());
+        sendOtaStatus(com_gymjot_cuff_OtaPhase_OTA_PHASE_ERROR, "Use DeviceCommand OTA interface", false, g_otaReceivedBytes, g_otaTotalBytes);
+        g_otaInProgress = false;
+        updateSnapshotCharacteristic(millis());
+    }
+};
 static bool sendEvent(const com_gymjot_cuff_DeviceEvent& event) {
     if (!g_tx) {
         return false;
     }
 
     std::array<uint8_t, kLengthPrefixBytes + kProtoBufferSize> buffer{};
-    pb_ostream_t stream = pb_ostream_from_buffer(buffer.data() + kLengthPrefixBytes, kProtoBufferSize);
-    if (!pb_encode(&stream, com_gymjot_cuff_DeviceEvent_fields, &event)) {
-        Serial.print("encode error: ");
-        Serial.println(PB_GET_ERROR(&stream));
+    size_t totalLen = 0;
+    if (!encodeWithLength(com_gymjot_cuff_DeviceEvent_fields, &event, buffer, totalLen)) {
         return false;
     }
-
-    const size_t payloadLen = stream.bytes_written;
-    if (payloadLen > 0xFFFF) {
-        Serial.println("encode error: payload too large");
-        return false;
-    }
-
-    buffer[0] = static_cast<uint8_t>(payloadLen & 0xFF);
-    buffer[1] = static_cast<uint8_t>((payloadLen >> 8) & 0xFF);
-    const size_t totalLen = payloadLen + kLengthPrefixBytes;
 
     g_tx->setValue(buffer.data(), totalLen);
     if (!g_tx->notify()) {
@@ -221,20 +374,73 @@ static bool setupAprilTagDetector() {
 }
 
 static void setupBLE() {
-    NimBLEDevice::init("ESP32CamStation");
+    if (!g_identity) {
+        g_identity = &gymjot::deviceIdentity();
+    }
+
+    NimBLEDevice::init(g_identity->name.c_str());
+    NimBLEDevice::setDeviceName(g_identity->name.c_str());
+    NimBLEDevice::setPower(ESP_PWR_LVL_N12);
+    NimBLEDevice::setMTU(247);
+    NimBLEDevice::setSecurityAuth(true, true, true);
+    NimBLEDevice::setSecurityIOCap(0x00);
+    NimBLEDevice::setSecurityPasskey(g_identity->passkey);
+
     g_server = NimBLEDevice::createServer();
     NimBLEService* service = g_server->createService(SERVICE_UUID);
 
-    NimBLECharacteristic* rx = service->createCharacteristic(
-        CHAR_RX_UUID, NIMBLE_PROPERTY::WRITE);
-    g_tx = service->createCharacteristic(
-        CHAR_TX_UUID, NIMBLE_PROPERTY::NOTIFY);
-    rx->setCallbacks(new RxCallback());
+    g_commandChar = service->createCharacteristic(CHAR_RX_UUID,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
+    g_commandChar->setCallbacks(new RxCallback());
+
+    g_tx = service->createCharacteristic(CHAR_TX_UUID,
+        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC);
+
+    g_snapshotChar = service->createCharacteristic(CHAR_SNAPSHOT_UUID,
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC | NIMBLE_PROPERTY::NOTIFY);
+    g_snapshotChar->setCallbacks(new SnapshotCallback());
+
+    g_infoChar = service->createCharacteristic(CHAR_INFO_UUID,
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC);
+    g_infoChar->setCallbacks(new InfoCallback());
+
+    g_otaChar = service->createCharacteristic(CHAR_OTA_UUID,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
+    g_otaChar->setCallbacks(new OtaCallback());
 
     service->start();
+
+    updateSnapshotCharacteristic(millis());
+    if (g_infoChar) {
+        g_infoChar->setValue(buildInfoString());
+    }
+
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-    adv->addServiceUUID(SERVICE_UUID);
+    NimBLEAdvertisementData advData;
+    advData.setName(g_identity->name);
+    advData.addServiceUUID(SERVICE_UUID);
+    std::string mfg;
+    mfg.push_back(static_cast<char>(MANUFACTURER_ID & 0xFF));
+    mfg.push_back(static_cast<char>((MANUFACTURER_ID >> 8) & 0xFF));
+    uint64_t deviceId = g_identity->deviceId;
+    for (int i = 0; i < 8; ++i) {
+        mfg.push_back(static_cast<char>((deviceId >> (8 * i)) & 0xFF));
+    }
+    advData.setManufacturerData(mfg);
+    adv->setAdvertisementData(advData);
+
+    NimBLEAdvertisementData scanData;
+    scanData.setName(g_identity->name);
+    adv->setScanResponseData(scanData);
+    adv->setMinInterval(160);
+    adv->setMaxInterval(320);
+
     NimBLEDevice::startAdvertising();
+
+    Serial.print("BLE name: ");
+    Serial.println(g_identity->name.c_str());
+    Serial.print("Passkey: ");
+    Serial.println(g_identity->passkey);
 }
 
 static float computeDetectionDistance(const apriltag_detection_t* det) {
@@ -345,6 +551,7 @@ void processCommand(const uint8_t* data, size_t len) {
             break;
         case com_gymjot_cuff_DeviceCommand_set_target_fps_tag:
             g_controller->setTargetFps(cmd.command.set_target_fps.fps, now);
+            updateSnapshotCharacteristic(now);
             break;
         case com_gymjot_cuff_DeviceCommand_station_update_tag: {
             const auto& update = cmd.command.station_update;
@@ -361,10 +568,76 @@ void processCommand(const uint8_t* data, size_t len) {
                 payload.metadata = metadataFromProto(update.metadata);
             }
             g_controller->handleStationPayload(payload, now);
+            updateSnapshotCharacteristic(now);
             break;
         }
         case com_gymjot_cuff_DeviceCommand_reset_reps_tag:
             g_controller->resetReps(now);
+            break;
+        case com_gymjot_cuff_DeviceCommand_power_tag:
+            if (cmd.command.power.shutdown) {
+                sendPowerEvent("shutdown", now);
+                delay(250);
+                NimBLEDevice::stopAdvertising();
+                esp_deep_sleep_start();
+                return;
+            } else {
+                sendPowerEvent("power-ignore", now);
+            }
+            break;
+        case com_gymjot_cuff_DeviceCommand_factory_reset_tag:
+            if (cmd.command.factory_reset.confirm) {
+                sendPowerEvent("factory-reset", now);
+                NimBLEDevice::deleteAllBonds();
+                gymjot::clearPersistentSettings();
+                gymjot::clearDeviceIdentity();
+                delay(250);
+                ESP.restart();
+                return;
+            } else {
+                sendPowerEvent("factory-reset-cancel", now);
+            }
+            break;
+        case com_gymjot_cuff_DeviceCommand_snapshot_request_tag:
+            updateSnapshotCharacteristic(now);
+            sendSnapshotEvent(now);
+            break;
+        case com_gymjot_cuff_DeviceCommand_update_device_config_tag: {
+            const auto& update = cmd.command.update_device_config;
+            if (update.set_target_fps) {
+                g_controller->setTargetFps(update.target_fps, now);
+            }
+            if (update.set_loiter_fps) {
+                g_controller->setLoiterFps(update.loiter_fps, now);
+            }
+            if (update.set_min_travel_cm) {
+                g_controller->setMinTravel(update.min_travel_cm, now);
+            }
+            if (update.set_max_rep_idle_ms) {
+                g_controller->setMaxRepIdleMs(update.max_rep_idle_ms, now);
+            }
+            updateSnapshotCharacteristic(now);
+            break;
+        }
+        case com_gymjot_cuff_DeviceCommand_ota_begin_tag: {
+            g_otaInProgress = true;
+            g_otaReceivedBytes = 0;
+            g_otaTotalBytes = cmd.command.ota_begin.total_size;
+            updateSnapshotCharacteristic(now);
+            sendOtaStatus(com_gymjot_cuff_OtaPhase_OTA_PHASE_ERROR, "OTA not implemented", false, 0, g_otaTotalBytes);
+            g_otaInProgress = false;
+            updateSnapshotCharacteristic(now);
+            break;
+        }
+        case com_gymjot_cuff_DeviceCommand_ota_chunk_tag:
+            g_otaReceivedBytes += 0;
+            sendOtaStatus(com_gymjot_cuff_OtaPhase_OTA_PHASE_ERROR, "OTA chunk ignored", false, g_otaReceivedBytes, g_otaTotalBytes);
+            updateSnapshotCharacteristic(now);
+            break;
+        case com_gymjot_cuff_DeviceCommand_ota_complete_tag:
+            sendOtaStatus(com_gymjot_cuff_OtaPhase_OTA_PHASE_ERROR, "OTA complete ignored", false, g_otaReceivedBytes, g_otaTotalBytes);
+            g_otaInProgress = false;
+            updateSnapshotCharacteristic(now);
             break;
         default:
             Serial.println("<- unknown command");
@@ -376,13 +649,17 @@ void setup() {
     Serial.begin(115200);
     Serial.println("Booting");
 
+    g_identity = &gymjot::deviceIdentity();
+    setupController();
+
     g_cameraReady = setupCamera();
     setupAprilTagDetector();
     setupBLE();
-    setupController();
 
     uint64_t now = millis();
     sendBootStatus(now);
+    sendSnapshotEvent(now);
+    updateSnapshotCharacteristic(now);
 }
 
 void loop() {
@@ -413,8 +690,10 @@ void loop() {
         }
     }
 
-    if (g_controller) {
-        g_controller->evaluateTimeouts(now);
+    static uint64_t lastSnapshot = 0;
+    if (now - lastSnapshot > 2000) {
+        updateSnapshotCharacteristic(now);
+        lastSnapshot = now;
     }
 
     delay(5);

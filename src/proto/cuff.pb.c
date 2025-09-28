@@ -27,6 +27,27 @@ PB_BIND(com_gymjot_cuff_StationUpdateCommand, com_gymjot_cuff_StationUpdateComma
 PB_BIND(com_gymjot_cuff_ResetRepsCommand, com_gymjot_cuff_ResetRepsCommand, AUTO)
 
 
+PB_BIND(com_gymjot_cuff_PowerCommand, com_gymjot_cuff_PowerCommand, AUTO)
+
+
+PB_BIND(com_gymjot_cuff_FactoryResetCommand, com_gymjot_cuff_FactoryResetCommand, AUTO)
+
+
+PB_BIND(com_gymjot_cuff_SnapshotRequestCommand, com_gymjot_cuff_SnapshotRequestCommand, AUTO)
+
+
+PB_BIND(com_gymjot_cuff_UpdateDeviceConfigCommand, com_gymjot_cuff_UpdateDeviceConfigCommand, AUTO)
+
+
+PB_BIND(com_gymjot_cuff_OtaBeginCommand, com_gymjot_cuff_OtaBeginCommand, AUTO)
+
+
+PB_BIND(com_gymjot_cuff_OtaChunkCommand, com_gymjot_cuff_OtaChunkCommand, AUTO)
+
+
+PB_BIND(com_gymjot_cuff_OtaCompleteCommand, com_gymjot_cuff_OtaCompleteCommand, AUTO)
+
+
 PB_BIND(com_gymjot_cuff_DeviceEvent, com_gymjot_cuff_DeviceEvent, 2)
 
 
@@ -52,6 +73,17 @@ PB_BIND(com_gymjot_cuff_ScanEvent, com_gymjot_cuff_ScanEvent, AUTO)
 
 
 PB_BIND(com_gymjot_cuff_RepEvent, com_gymjot_cuff_RepEvent, AUTO)
+
+
+PB_BIND(com_gymjot_cuff_SnapshotEvent, com_gymjot_cuff_SnapshotEvent, AUTO)
+
+
+PB_BIND(com_gymjot_cuff_OtaStatusEvent, com_gymjot_cuff_OtaStatusEvent, AUTO)
+
+
+PB_BIND(com_gymjot_cuff_PowerEvent, com_gymjot_cuff_PowerEvent, AUTO)
+
+
 
 
 
