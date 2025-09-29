@@ -2,6 +2,12 @@
 
 PlatformIO firmware for the GymJot BLE cuff built on the ESP32-CAM. The device captures AprilTag detections, tracks repetitions, and exposes a secure BLE interface for the companion mobile apps.
 
+## Quick Start
+1. Clone the repository and install the PlatformIO CLI.
+2. Connect the ESP32-CAM cuff over USB and flash with `pio run -e esp32cam --target upload`.
+3. Use `pio device monitor -b 115200` to verify boot, note the advertised name and passkey.
+4. Pair from the mobile app, subscribe to events, and start streaming reps.
+
 ## Features
 - Protobuf-based BLE protocol (command/event split) with 2-byte length framing
 - Secure BLE pairing with per-device name, manufacturer ID, and static 6-digit passkey
@@ -79,6 +85,12 @@ For Android client implementation guidance (scan/connect/bond/serialize), see `d
 ## AprilTag Pipeline
 - Real detections require AprilTag support (enabled by default).
 - Test mode generates deterministic motion for UI/testing; enable via `SetTestModeCommand`.
+
+## Screenshots
+Screenshots live in `docs/screenshots/`. Suggested captures (add files as you collect them):
+- ![BLE Scan](docs/screenshots/ble_scan.png) (mobile app discovering multiple cuffs).
+- ![Pairing Prompt](docs/screenshots/pairing_prompt.png) (static passkey entry dialog).
+- ![Session Dashboard](docs/screenshots/session_dashboard.png) (app displaying status and reps).
 
 ## Reset & Power Commands
 - **PowerCommand** with `shutdown=true`: emits a power event, stops advertising, and enters deep sleep. Wake requires external trigger.
