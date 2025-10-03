@@ -26,6 +26,7 @@ extern "C" {
 #include "PersistentConfig.h"
 
 #include <esp_sleep.h>
+#include <esp_task_wdt.h>
 
 // ESP32-CAM (AI Thinker) pin mapping
 #define PWDN_GPIO_NUM     32
@@ -65,6 +66,9 @@ static uint32_t g_otaTotalBytes = 0;
 static uint32_t g_otaReceivedBytes = 0;
 static const gymjot::DeviceIdentity* g_identity = nullptr;
 static constexpr const char* kFirmwareVersion = "0.1.0";
+static bool g_clientConnected = false;
+static uint64_t g_lastConnectionTime = 0;
+static int8_t g_lastRssi = 0;
 
 static constexpr size_t kProtoBufferSize = 512;
 static constexpr size_t kLengthPrefixBytes = 2;
@@ -182,6 +186,77 @@ class InfoCallback : public NimBLECharacteristicCallbacks {
     }
 };
 
+class ServerCallback : public NimBLEServerCallbacks {
+    void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
+        g_clientConnected = true;
+        g_lastConnectionTime = millis();
+
+        Serial.println("=== BLE CLIENT CONNECTED ===");
+        Serial.print("Client address: ");
+        Serial.println(connInfo.getAddress().toString().c_str());
+        Serial.print("Connection ID: ");
+        Serial.println(connInfo.getConnHandle());
+        Serial.print("MTU: ");
+        Serial.println(pServer->getPeerMTU(connInfo.getConnHandle()));
+
+        // Request connection parameter update for better reliability
+        pServer->updateConnParams(connInfo.getConnHandle(), 12, 24, 0, 400);
+
+        // Send connection event (delayed to allow MTU negotiation)
+        delay(100);
+        com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+        evt.timestamp_ms = millis();
+        evt.which_event = com_gymjot_cuff_DeviceEvent_status_tag;
+        std::strncpy(evt.event.status.status_label, "ble-connected", sizeof(evt.event.status.status_label) - 1);
+        sendEvent(evt);
+    }
+
+    void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
+        g_clientConnected = false;
+
+        Serial.println("=== BLE CLIENT DISCONNECTED ===");
+        Serial.print("Connection duration: ");
+        Serial.print((millis() - g_lastConnectionTime) / 1000);
+        Serial.println(" seconds");
+        Serial.print("Reason code: ");
+        Serial.print(reason);
+        Serial.print(" - ");
+
+        // Decode disconnect reason
+        switch(reason) {
+            case 0x08: Serial.println("Connection timeout"); break;
+            case 0x13: Serial.println("Remote user terminated"); break;
+            case 0x16: Serial.println("Connection terminated by local host"); break;
+            case 0x3D: Serial.println("Connection failed to establish"); break;
+            case 0x3E: Serial.println("LMP response timeout"); break;
+            case 0x22: Serial.println("LMP error / Connection terminated"); break;
+            default: Serial.println("Other/Unknown"); break;
+        }
+
+        Serial.print("Restarting advertising...");
+        if (NimBLEDevice::startAdvertising()) {
+            Serial.println("OK");
+        } else {
+            Serial.println("FAILED - attempting restart");
+            delay(100);
+            NimBLEDevice::startAdvertising();
+        }
+
+        // Send disconnection event
+        com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+        evt.timestamp_ms = millis();
+        evt.which_event = com_gymjot_cuff_DeviceEvent_status_tag;
+        char msg[64];
+        snprintf(msg, sizeof(msg), "ble-disconnected-0x%02X", reason);
+        std::strncpy(evt.event.status.status_label, msg, sizeof(evt.event.status.status_label) - 1);
+        sendEvent(evt);
+    }
+
+    void onMTUChange(uint16_t MTU, NimBLEConnInfo& connInfo) override {
+        Serial.print("MTU negotiated: ");
+        Serial.println(MTU);
+    }
+};
 
 
 static void fillSnapshot(com_gymjot_cuff_SnapshotEvent& snapshot) {
@@ -278,6 +353,11 @@ static bool sendEvent(const com_gymjot_cuff_DeviceEvent& event) {
         return false;
     }
 
+    // Don't try to send if no client is connected
+    if (!g_clientConnected) {
+        return false;
+    }
+
     std::array<uint8_t, kLengthPrefixBytes + kProtoBufferSize> buffer{};
     size_t totalLen = 0;
     if (!encodeWithLength(com_gymjot_cuff_DeviceEvent_fields, &event, buffer, totalLen)) {
@@ -286,7 +366,7 @@ static bool sendEvent(const com_gymjot_cuff_DeviceEvent& event) {
 
     g_tx->setValue(buffer.data(), totalLen);
     if (!g_tx->notify()) {
-        Serial.println("notify failed");
+        Serial.println("notify failed (client may have disconnected)");
         return false;
     }
 
@@ -378,15 +458,37 @@ static void setupBLE() {
         g_identity = &gymjot::deviceIdentity();
     }
 
+    Serial.println("=== BLE INITIALIZATION ===");
+    Serial.print("Device name: ");
+    Serial.println(g_identity->name.c_str());
+    Serial.print("Device ID: 0x");
+    Serial.println((unsigned long)g_identity->deviceId, HEX);
+    Serial.print("Passkey: ");
+    Serial.println(g_identity->passkey);
+    Serial.println();
+
     NimBLEDevice::init(g_identity->name.c_str());
     NimBLEDevice::setDeviceName(g_identity->name.c_str());
     NimBLEDevice::setPower(ESP_PWR_LVL_N12);
     NimBLEDevice::setMTU(247);
+
+    // Security: require bonding, MITM protection, and secure connections
     NimBLEDevice::setSecurityAuth(true, true, true);
-    NimBLEDevice::setSecurityIOCap(0x00);
+    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);  // Device displays passkey
     NimBLEDevice::setSecurityPasskey(g_identity->passkey);
 
+    Serial.println("Passkey configured for pairing");
+
+    Serial.println("Security settings:");
+    Serial.println("  - Authentication: REQUIRED");
+    Serial.println("  - Bonding: REQUIRED");
+    Serial.println("  - Encryption: REQUIRED");
+    Serial.println("  - IO Capability: NoInputNoOutput");
+    Serial.println("  - MTU: 247 bytes");
+    Serial.println("  - TX Power: -12 dBm");
+
     g_server = NimBLEDevice::createServer();
+    g_server->setCallbacks(new ServerCallback());
     NimBLEService* service = g_server->createService(SERVICE_UUID);
 
     g_commandChar = service->createCharacteristic(CHAR_RX_UUID,
@@ -409,6 +511,21 @@ static void setupBLE() {
     g_otaChar->setCallbacks(new OtaCallback());
 
     service->start();
+
+    Serial.println("BLE Service created:");
+    Serial.print("  - Service UUID: ");
+    Serial.println(SERVICE_UUID);
+    Serial.println("  - Characteristics:");
+    Serial.print("    * Command RX: ");
+    Serial.println(CHAR_RX_UUID);
+    Serial.print("    * Event TX: ");
+    Serial.println(CHAR_TX_UUID);
+    Serial.print("    * Info: ");
+    Serial.println(CHAR_INFO_UUID);
+    Serial.print("    * Snapshot: ");
+    Serial.println(CHAR_SNAPSHOT_UUID);
+    Serial.print("    * OTA: ");
+    Serial.println(CHAR_OTA_UUID);
 
     updateSnapshotCharacteristic(millis());
     if (g_infoChar) {
@@ -435,12 +552,35 @@ static void setupBLE() {
     adv->setMinInterval(160);
     adv->setMaxInterval(320);
 
-    NimBLEDevice::startAdvertising();
+    Serial.println("Advertising configuration:");
+    Serial.print("  - Manufacturer ID: 0x");
+    Serial.println(MANUFACTURER_ID, HEX);
+    Serial.print("  - Device ID in adv data: 0x");
+    Serial.println((unsigned long)g_identity->deviceId, HEX);
+    Serial.println("  - Min interval: 100ms (160 * 0.625ms)");
+    Serial.println("  - Max interval: 200ms (320 * 0.625ms)");
+    Serial.println("  - Service UUID included: YES");
 
-    Serial.print("BLE name: ");
+    if (!NimBLEDevice::startAdvertising()) {
+        Serial.println("ERROR: Failed to start advertising!");
+        Serial.println("TROUBLESHOOTING:");
+        Serial.println("  1. Check if BLE is already initialized");
+        Serial.println("  2. Verify sufficient memory");
+        Serial.println("  3. Check for BLE stack errors");
+        return;
+    }
+
+    Serial.println("=== BLE ADVERTISING STARTED ===");
+    Serial.println("Device is now discoverable and ready to pair!");
+    Serial.println();
+    Serial.println("PAIRING INSTRUCTIONS:");
+    Serial.println("1. Scan for BLE devices on your mobile app");
+    Serial.print("2. Look for device: ");
     Serial.println(g_identity->name.c_str());
-    Serial.print("Passkey: ");
+    Serial.print("3. When prompted, enter passkey: ");
     Serial.println(g_identity->passkey);
+    Serial.println("4. Watch this serial output for connection status");
+    Serial.println("===============================");
 }
 
 static float computeDetectionDistance(const apriltag_detection_t* det) {
@@ -647,23 +787,65 @@ void processCommand(const uint8_t* data, size_t len) {
 
 void setup() {
     Serial.begin(115200);
-    Serial.println("Booting");
+    delay(100);
+    Serial.println();
+    Serial.println("========================================");
+    Serial.println("    GymJot Cuff - Booting");
+    Serial.println("========================================");
+    Serial.print("Firmware version: ");
+    Serial.println(kFirmwareVersion);
+    Serial.println();
+
+    // Initialize watchdog timer (30 second timeout)
+    Serial.println("Initializing watchdog timer (30s timeout)...");
+    esp_task_wdt_init(30, true);
+    esp_task_wdt_add(NULL);
+    Serial.println("Watchdog enabled");
 
     g_identity = &gymjot::deviceIdentity();
     setupController();
 
+    Serial.println();
+    Serial.println("Initializing hardware...");
     g_cameraReady = setupCamera();
-    setupAprilTagDetector();
+    if (g_cameraReady) {
+        Serial.println("Camera: OK");
+    } else {
+        Serial.println("Camera: FAILED");
+    }
+
+    if (setupAprilTagDetector()) {
+        Serial.println("AprilTag detector: OK");
+    } else {
+        Serial.println("AprilTag detector: FAILED");
+    }
+
+    Serial.println();
     setupBLE();
 
     uint64_t now = millis();
     sendBootStatus(now);
     sendSnapshotEvent(now);
     updateSnapshotCharacteristic(now);
+
+    Serial.println();
+    Serial.println("========================================");
+    Serial.println("    Boot Complete - System Ready");
+    Serial.println("========================================");
+    Serial.println();
+
+    esp_task_wdt_reset();
 }
 
 void loop() {
     uint64_t now = millis();
+
+    // Reset watchdog timer
+    static uint64_t lastWdtReset = 0;
+    if (now - lastWdtReset > 5000) {
+        esp_task_wdt_reset();
+        lastWdtReset = now;
+    }
 
     if (g_controller) {
         g_controller->maintainTestMode(now);

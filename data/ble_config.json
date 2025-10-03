@@ -1,0 +1,55 @@
+{
+  "profile": {
+    "service_uuid": "6E400001-B5A3-F393-E0A9-E50E24DCCA9E",
+    "manufacturer_id": 65535,
+    "description": "GymJot Cuff BLE Profile",
+    "device_name_prefix": "cuff",
+    "characteristics": {
+      "command_rx": {
+        "uuid": "6E400002-B5A3-F393-E0A9-E50E24DCCA9E",
+        "description": "Command input (write)",
+        "properties": ["write", "write_no_response", "write_encrypted"]
+      },
+      "event_tx": {
+        "uuid": "6E400003-B5A3-F393-E0A9-E50E24DCCA9E",
+        "description": "Event notifications (notify/read)",
+        "properties": ["notify", "read", "read_encrypted"]
+      },
+      "info": {
+        "uuid": "6E400004-B5A3-F393-E0A9-E50E24DCCA9E",
+        "description": "Device info (read-only)",
+        "properties": ["read", "read_encrypted"]
+      },
+      "snapshot": {
+        "uuid": "6E400005-B5A3-F393-E0A9-E50E24DCCA9E",
+        "description": "Snapshot state (read/notify)",
+        "properties": ["read", "read_encrypted", "notify"]
+      },
+      "ota": {
+        "uuid": "6E400006-B5A3-F393-E0A9-E50E24DCCA9E",
+        "description": "OTA updates (write)",
+        "properties": ["write", "write_no_response", "write_encrypted"]
+      }
+    }
+  },
+  "advertising": {
+    "min_interval_ms": 100,
+    "max_interval_ms": 200,
+    "tx_power_dbm": -12,
+    "include_service_uuid": true,
+    "include_device_id": true
+  },
+  "connection": {
+    "required_security": true,
+    "require_encryption": true,
+    "require_bonding": true,
+    "io_capability": "NoInputNoOutput",
+    "mtu_size": 247
+  },
+  "diagnostics": {
+    "log_connection_events": true,
+    "log_pairing_events": true,
+    "log_security_events": true,
+    "verbose_errors": true
+  }
+}

@@ -2,6 +2,9 @@
 
 #include "MetadataTypes.h"
 
+// Set to 0 for random passkey (check serial monitor), or set a fixed 6-digit code
+#define BLE_FIXED_PASSKEY 123456  // Fixed passkey for production (no serial needed)
+
 #define TEST_MODE_DEFAULT false
 #define DEFAULT_FPS 8.0f
 #define LOITER_FPS 0.3333f

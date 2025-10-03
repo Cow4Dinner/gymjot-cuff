@@ -1,4 +1,5 @@
 #include "DeviceIdentity.h"
+#include "Config.h"
 
 #ifdef ARDUINO
 #include <Preferences.h>
@@ -108,10 +109,25 @@ DeviceIdentity loadOrCreateIdentity() {
         prefs.putString(kKeyName, id.name.c_str());
     }
 
-    if (!hasPass || id.passkey < 100000 || id.passkey > 999999) {
-        // Generate a 6-digit passkey.
+    // Check if we need to update the passkey
+    bool needsUpdate = !hasPass || id.passkey < 100000 || id.passkey > 999999;
+
+#if defined(BLE_FIXED_PASSKEY) && BLE_FIXED_PASSKEY >= 100000 && BLE_FIXED_PASSKEY <= 999999
+    // If using fixed passkey and stored passkey doesn't match, update it
+    if (hasPass && id.passkey != BLE_FIXED_PASSKEY) {
+        needsUpdate = true;
+    }
+#endif
+
+    if (needsUpdate) {
+        // Use fixed passkey if defined, otherwise generate random
+#if defined(BLE_FIXED_PASSKEY) && BLE_FIXED_PASSKEY >= 100000 && BLE_FIXED_PASSKEY <= 999999
+        id.passkey = BLE_FIXED_PASSKEY;
+#else
+        // Generate a random 6-digit passkey
         uint32_t value = esp_random() % 900000U;
         id.passkey = 100000U + value;
+#endif
         prefs.putUInt(kKeyPass, id.passkey);
     }
 
