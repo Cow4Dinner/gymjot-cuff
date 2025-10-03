@@ -45,6 +45,7 @@ message DeviceCommand {
     OtaBeginCommand ota_begin = 18;
     OtaChunkCommand ota_chunk = 19;
     OtaCompleteCommand ota_complete = 20;
+    ClearBondsCommand clear_bonds = 21;
   }
 }
 
@@ -73,6 +74,10 @@ message PowerCommand {
 }
 
 message FactoryResetCommand {
+  bool confirm = 1;
+}
+
+message ClearBondsCommand {
   bool confirm = 1;
 }
 
@@ -183,6 +188,15 @@ message SnapshotEvent {
   bool camera_ready = 9;
   bool ota_in_progress = 10;
   uint32 active_tag_id = 11;
+
+  // Connection telemetry (added for BLE diagnostics)
+  bool ble_connected = 12;
+  uint32 ble_mtu = 13;                    // Current MTU in bytes
+  uint32 conn_interval_ms = 14;           // Connection interval in milliseconds (x100 for precision)
+  uint32 conn_latency = 15;               // Slave latency
+  uint32 supervision_timeout_ms = 16;     // Supervision timeout in milliseconds
+  uint32 last_disconnect_reason = 17;     // Last HCI disconnect reason code
+  uint32 bonded_count = 18;               // Number of bonded devices
 }
 
 message OtaStatusEvent {

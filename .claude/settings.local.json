@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(pio run:*)",
-      "Bash(platformio run:*)"
+      "Bash(platformio run:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(nanopb_generator:*)",
+      "Bash(where nanopb_generator)"
     ],
     "deny": [],
     "ask": []

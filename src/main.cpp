@@ -69,6 +69,18 @@ static constexpr const char* kFirmwareVersion = "0.1.0";
 static bool g_clientConnected = false;
 static uint64_t g_lastConnectionTime = 0;
 static int8_t g_lastRssi = 0;
+static bool g_connectionOptimized = false;
+
+// Connection telemetry and instrumentation
+static uint64_t g_connectTimestamp = 0;
+static uint64_t g_mtuNegotiatedTimestamp = 0;
+static uint64_t g_connParamsUpdatedTimestamp = 0;
+static uint64_t g_firstAttRequestTimestamp = 0;
+static uint8_t g_lastDisconnectReason = 0;
+static uint16_t g_currentMtu = 23;  // Default BLE MTU
+static uint16_t g_currentConnInterval = 0;  // in 1.25ms units
+static uint16_t g_currentConnLatency = 0;
+static uint16_t g_currentSupervisionTimeout = 0;  // in 10ms units
 
 static constexpr size_t kProtoBufferSize = 512;
 static constexpr size_t kLengthPrefixBytes = 2;
@@ -148,7 +160,27 @@ static void logPacket(size_t len) {
 }
 
 class RxCallback : public NimBLECharacteristicCallbacks {
-    void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
+    void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo& connInfo) override {
+        // Track first ATT request
+        if (g_firstAttRequestTimestamp == 0) {
+            g_firstAttRequestTimestamp = millis();
+            Serial.print("[INSTR] First ATT request at +");
+            Serial.print(g_firstAttRequestTimestamp - g_connectTimestamp);
+            Serial.println("ms");
+        }
+
+        // Check if connection is encrypted - security request flow
+        if (!connInfo.isEncrypted()) {
+            Serial.println("!!! WRITE ATTEMPTED ON UNENCRYPTED CONNECTION !!!");
+            Serial.println("Requesting encryption/pairing...");
+
+            // Request security upgrade (trigger pairing)
+            NimBLEDevice::startSecurity(connInfo.getConnHandle());
+
+            Serial.println("Please complete pairing and retry the command");
+            return;
+        }
+
         std::string val = characteristic->getValue();
         if (val.size() < kLengthPrefixBytes) {
             Serial.println("<- command too short");
@@ -189,72 +221,161 @@ class InfoCallback : public NimBLECharacteristicCallbacks {
 class ServerCallback : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
         g_clientConnected = true;
-        g_lastConnectionTime = millis();
+        g_connectTimestamp = millis();
+        g_lastConnectionTime = g_connectTimestamp;
 
         Serial.println("=== BLE CLIENT CONNECTED ===");
+        Serial.print("[INSTR] Connect timestamp: ");
+        Serial.println(g_connectTimestamp);
         Serial.print("Client address: ");
         Serial.println(connInfo.getAddress().toString().c_str());
         Serial.print("Connection ID: ");
         Serial.println(connInfo.getConnHandle());
-        Serial.print("MTU: ");
-        Serial.println(pServer->getPeerMTU(connInfo.getConnHandle()));
 
-        // Request connection parameter update for better reliability
-        pServer->updateConnParams(connInfo.getConnHandle(), 12, 24, 0, 400);
+        // Get initial connection parameters
+        g_currentConnInterval = connInfo.getConnInterval();
+        g_currentConnLatency = connInfo.getConnLatency();
+        g_currentSupervisionTimeout = connInfo.getConnTimeout();
 
-        // Send connection event (delayed to allow MTU negotiation)
-        delay(100);
-        com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
-        evt.timestamp_ms = millis();
-        evt.which_event = com_gymjot_cuff_DeviceEvent_status_tag;
-        std::strncpy(evt.event.status.status_label, "ble-connected", sizeof(evt.event.status.status_label) - 1);
-        sendEvent(evt);
+        Serial.print("[INSTR] Initial conn params: interval=");
+        Serial.print(g_currentConnInterval * 1.25f);
+        Serial.print("ms, latency=");
+        Serial.print(g_currentConnLatency);
+        Serial.print(", timeout=");
+        Serial.print(g_currentSupervisionTimeout * 10);
+        Serial.println("ms");
+
+        // Reset telemetry timestamps
+        g_mtuNegotiatedTimestamp = 0;
+        g_connParamsUpdatedTimestamp = 0;
+        g_firstAttRequestTimestamp = 0;
+
+        // DON'T update connection params, MTU, or PHY yet
+        // Wait for GATT discovery to complete first
+        Serial.println("Waiting for GATT discovery, MTU negotiation, and pairing...");
     }
 
     void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
         g_clientConnected = false;
+        g_lastDisconnectReason = reason;
+        uint64_t disconnectTime = millis();
 
         Serial.println("=== BLE CLIENT DISCONNECTED ===");
+        Serial.print("[INSTR] Disconnect timestamp: ");
+        Serial.println(disconnectTime);
         Serial.print("Connection duration: ");
-        Serial.print((millis() - g_lastConnectionTime) / 1000);
+        Serial.print((disconnectTime - g_lastConnectionTime) / 1000);
         Serial.println(" seconds");
-        Serial.print("Reason code: ");
-        Serial.print(reason);
+        Serial.print("Reason code: 0x");
+        Serial.print(reason, HEX);
         Serial.print(" - ");
+
+        // Check for authentication/pairing failures - auto-clear bonds
+        bool pairingFailed = false;
 
         // Decode disconnect reason
         switch(reason) {
-            case 0x08: Serial.println("Connection timeout"); break;
-            case 0x13: Serial.println("Remote user terminated"); break;
-            case 0x16: Serial.println("Connection terminated by local host"); break;
-            case 0x3D: Serial.println("Connection failed to establish"); break;
-            case 0x3E: Serial.println("LMP response timeout"); break;
-            case 0x22: Serial.println("LMP error / Connection terminated"); break;
-            default: Serial.println("Other/Unknown"); break;
+            case 0x05:  // Authentication failure
+                Serial.println("AUTHENTICATION FAILURE");
+                pairingFailed = true;
+                break;
+            case 0x06:  // PIN or key missing
+                Serial.println("PIN/KEY MISSING");
+                pairingFailed = true;
+                break;
+            case 0x08:
+                Serial.println("Connection timeout");
+                break;
+            case 0x13:
+                Serial.println("Remote user terminated");
+                break;
+            case 0x16:
+                Serial.println("Connection terminated by local host");
+                break;
+            case 0x3D:  // Connection failed to establish (often pairing timeout)
+                Serial.println("Connection failed to establish (possibly pairing timeout)");
+                pairingFailed = true;
+                break;
+            case 0x3E:
+                Serial.println("LMP response timeout");
+                break;
+            case 0x22:
+                Serial.println("LMP error / Connection terminated");
+                break;
+            default:
+                Serial.println("Other/Unknown");
+                break;
         }
 
-        Serial.print("Restarting advertising...");
+        // Auto-recovery: Clear bonds on authentication failure
+        // Don't tighten security on CONN_TIMEOUT or AUTH_FAILURE - allow fresh pairing
+        if (pairingFailed) {
+            Serial.println("=== AUTO-RECOVERY: Clearing bonds ===");
+            NimBLEDevice::deleteAllBonds();
+            Serial.println("All bonds cleared - ready for fresh pairing");
+        }
+
+        // Restart advertising IMMEDIATELY (within ≤500ms)
+        // NO delays, NO heavy work (event sending moved to loop)
+        Serial.print("[INSTR] Restarting advertising at +");
+        Serial.print(millis() - disconnectTime);
+        Serial.println("ms...");
+
         if (NimBLEDevice::startAdvertising()) {
-            Serial.println("OK");
+            Serial.println("OK - Device discoverable");
         } else {
-            Serial.println("FAILED - attempting restart");
-            delay(100);
+            Serial.println("FAILED - retrying");
             NimBLEDevice::startAdvertising();
         }
-
-        // Send disconnection event
-        com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
-        evt.timestamp_ms = millis();
-        evt.which_event = com_gymjot_cuff_DeviceEvent_status_tag;
-        char msg[64];
-        snprintf(msg, sizeof(msg), "ble-disconnected-0x%02X", reason);
-        std::strncpy(evt.event.status.status_label, msg, sizeof(evt.event.status.status_label) - 1);
-        sendEvent(evt);
     }
 
     void onMTUChange(uint16_t MTU, NimBLEConnInfo& connInfo) override {
-        Serial.print("MTU negotiated: ");
-        Serial.println(MTU);
+        g_currentMtu = MTU;
+        g_mtuNegotiatedTimestamp = millis();
+
+        Serial.print("[INSTR] MTU negotiated: ");
+        Serial.print(MTU);
+        Serial.print(" bytes at +");
+        Serial.print(g_mtuNegotiatedTimestamp - g_connectTimestamp);
+        Serial.println("ms");
+    }
+
+    void onAuthenticationComplete(NimBLEConnInfo& connInfo) override {
+        Serial.print("[INSTR] Authentication complete at +");
+        Serial.print(millis() - g_connectTimestamp);
+        Serial.print("ms, encrypted=");
+        Serial.print(connInfo.isEncrypted());
+        Serial.print(", authenticated=");
+        Serial.println(connInfo.isAuthenticated());
+    }
+
+    void onConnParamsUpdate(NimBLEConnInfo& connInfo) override {
+        g_currentConnInterval = connInfo.getConnInterval();
+        g_currentConnLatency = connInfo.getConnLatency();
+        g_currentSupervisionTimeout = connInfo.getConnTimeout();
+        g_connParamsUpdatedTimestamp = millis();
+
+        Serial.print("[INSTR] Conn params updated at +");
+        Serial.print(g_connParamsUpdatedTimestamp - g_connectTimestamp);
+        Serial.print("ms: interval=");
+        Serial.print(g_currentConnInterval * 1.25f);
+        Serial.print("ms, latency=");
+        Serial.print(g_currentConnLatency);
+        Serial.print(", timeout=");
+        Serial.print(g_currentSupervisionTimeout * 10);
+        Serial.println("ms");
+
+        // Verify supervision timeout rule: timeout >= 2 * interval * (1 + latency) * 3
+        float minTimeoutMs = 2.0f * (g_currentConnInterval * 1.25f) * (1 + g_currentConnLatency) * 3.0f;
+        float actualTimeoutMs = g_currentSupervisionTimeout * 10.0f;
+
+        if (actualTimeoutMs < minTimeoutMs) {
+            Serial.print("[WARNING] Supervision timeout too low! Recommended: >=");
+            Serial.print(minTimeoutMs);
+            Serial.print("ms, actual: ");
+            Serial.print(actualTimeoutMs);
+            Serial.println("ms");
+        }
     }
 };
 
@@ -286,6 +407,15 @@ static void fillSnapshot(com_gymjot_cuff_SnapshotEvent& snapshot) {
         snapshot.max_rep_idle_ms = DEFAULT_MAX_REP_IDLE_MS;
         snapshot.active_tag_id = 0;
     }
+
+    // Connection telemetry (uncomment after regenerating protobuf)
+    // snapshot.ble_connected = g_clientConnected;
+    // snapshot.ble_mtu = g_currentMtu;
+    // snapshot.conn_interval_ms = static_cast<uint32_t>(g_currentConnInterval * 1.25f * 100);  // x100 for precision
+    // snapshot.conn_latency = g_currentConnLatency;
+    // snapshot.supervision_timeout_ms = g_currentSupervisionTimeout * 10;
+    // snapshot.last_disconnect_reason = g_lastDisconnectReason;
+    // snapshot.bonded_count = NimBLEDevice::getNumBonds();
 }
 
 static void updateSnapshotCharacteristic(uint64_t nowMs) {
@@ -491,21 +621,26 @@ static void setupBLE() {
     g_server->setCallbacks(new ServerCallback());
     NimBLEService* service = g_server->createService(SERVICE_UUID);
 
+    // Command RX: Require encryption for writes (security), but allow discovery
     g_commandChar = service->createCharacteristic(CHAR_RX_UUID,
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
     g_commandChar->setCallbacks(new RxCallback());
 
+    // Event TX: Allow unencrypted reads for discovery, notifications don't require encryption
     g_tx = service->createCharacteristic(CHAR_TX_UUID,
-        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC);
+        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
 
+    // Snapshot: Allow unencrypted reads for discovery
     g_snapshotChar = service->createCharacteristic(CHAR_SNAPSHOT_UUID,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC | NIMBLE_PROPERTY::NOTIFY);
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
     g_snapshotChar->setCallbacks(new SnapshotCallback());
 
+    // Info: Allow unencrypted reads (public device information)
     g_infoChar = service->createCharacteristic(CHAR_INFO_UUID,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC);
+        NIMBLE_PROPERTY::READ);
     g_infoChar->setCallbacks(new InfoCallback());
 
+    // OTA: Require encryption for writes (security)
     g_otaChar = service->createCharacteristic(CHAR_OTA_UUID,
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
     g_otaChar->setCallbacks(new OtaCallback());
@@ -779,6 +914,29 @@ void processCommand(const uint8_t* data, size_t len) {
             g_otaInProgress = false;
             updateSnapshotCharacteristic(now);
             break;
+        // NOTE: Uncomment after regenerating protobuf with clear_bonds command
+        // case com_gymjot_cuff_DeviceCommand_clear_bonds_tag:
+        //     if (cmd.command.clear_bonds.confirm) {
+        //         Serial.println("=== CLEARING ALL BONDS (USER REQUEST) ===");
+        //         int bondCount = NimBLEDevice::getNumBonds();
+        //         NimBLEDevice::deleteAllBonds();
+        //         Serial.print("Cleared ");
+        //         Serial.print(bondCount);
+        //         Serial.println(" bond(s)");
+        //
+        //         // Send confirmation event
+        //         com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+        //         evt.timestamp_ms = now;
+        //         evt.which_event = com_gymjot_cuff_DeviceEvent_status_tag;
+        //         std::strncpy(evt.event.status.status_label, "bonds-cleared",
+        //                      sizeof(evt.event.status.status_label) - 1);
+        //         sendEvent(evt);
+        //
+        //         Serial.println("All bonds cleared - ready for fresh pairing");
+        //     } else {
+        //         Serial.println("Clear bonds cancelled (confirm=false)");
+        //     }
+        //     break;
         default:
             Serial.println("<- unknown command");
             break;
@@ -845,6 +1003,66 @@ void loop() {
     if (now - lastWdtReset > 5000) {
         esp_task_wdt_reset();
         lastWdtReset = now;
+    }
+
+    // DEFER connection parameter updates until after discovery and pairing
+    // Wait for: encrypted + authenticated + first ATT request (discovery complete)
+    if (g_clientConnected && !g_connectionOptimized && g_server && g_firstAttRequestTimestamp > 0) {
+        auto peers = g_server->getPeerDevices();
+        if (!peers.empty()) {
+            auto connInfo = g_server->getPeerInfo(peers[0]);
+            if (connInfo.isEncrypted() && connInfo.isAuthenticated()) {
+                // Additional delay to ensure discovery is complete
+                if (now - g_firstAttRequestTimestamp > 500) {
+                    g_connectionOptimized = true;
+
+                    Serial.println("=== PAIRING & DISCOVERY COMPLETE ===");
+                    Serial.println("Requesting optimized connection parameters...");
+
+                    // Safe connection parameters per BLE best practices:
+                    // conn_interval = 30-50ms, slave_latency = 0-4, supervision_timeout = 5-6s
+                    // Rule: timeout_ms >= 2 * interval_ms * (1 + latency) * 3
+                    // Example: 5000 >= 2 * 40 * (1 + 2) * 3 = 720 ✓
+                    g_server->updateConnParams(connInfo.getConnHandle(),
+                        24,   // min_interval (24 * 1.25ms = 30ms)
+                        40,   // max_interval (40 * 1.25ms = 50ms)
+                        2,    // slave_latency (allows skipping 2 events for power saving)
+                        500   // supervision_timeout (500 * 10ms = 5000ms = 5s)
+                    );
+
+                    Serial.println("Requested params: interval=30-50ms, latency=2, timeout=5s");
+                    Serial.println("(Central may choose different values)");
+
+                    // Log final telemetry summary
+                    Serial.println();
+                    Serial.println("=== CONNECTION TELEMETRY SUMMARY ===");
+                    Serial.print("MTU negotiation: +");
+                    Serial.print(g_mtuNegotiatedTimestamp - g_connectTimestamp);
+                    Serial.print("ms (");
+                    Serial.print(g_currentMtu);
+                    Serial.println(" bytes)");
+                    Serial.print("First ATT request: +");
+                    Serial.print(g_firstAttRequestTimestamp - g_connectTimestamp);
+                    Serial.println("ms");
+                    Serial.print("Connection optimization: +");
+                    Serial.print(now - g_connectTimestamp);
+                    Serial.println("ms");
+
+                    // Send pairing success event
+                    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+                    evt.timestamp_ms = now;
+                    evt.which_event = com_gymjot_cuff_DeviceEvent_status_tag;
+                    std::strncpy(evt.event.status.status_label, "pairing-success",
+                                 sizeof(evt.event.status.status_label) - 1);
+                    sendEvent(evt);
+                }
+            }
+        }
+    }
+
+    // Reset optimization flag on disconnect
+    if (!g_clientConnected && g_connectionOptimized) {
+        g_connectionOptimized = false;
     }
 
     if (g_controller) {
