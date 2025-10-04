@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- GATT Schema for GymJot Cuff - Bluetooth SIG XML Format -->
+<gatt>
+  <services>
+    <service type="primary" uuid="6E400001-B5A3-F393-E0A9-E50E24DCCA9E" name="GymJot Cuff Service">
+      <description>Custom BLE service for GymJot fitness tracking cuff device with AprilTag detection</description>
+
+      <!-- Command RX Characteristic -->
+      <characteristic uuid="6E400002-B5A3-F393-E0A9-E50E24DCCA9E" name="Command RX">
+        <description>Receive commands from client (write with encryption required)</description>
+        <properties>
+          <write authenticated="true" encrypted="true"/>
+          <write_without_response authenticated="true" encrypted="true"/>
+        </properties>
+        <value type="hex" length="514" variable_length="true">
+          <description>2-byte little-endian length prefix followed by DeviceCommand protobuf message</description>
+        </value>
+        <informative_text>
+          Supported commands:
+          - SetTestModeCommand: Enable/disable test mode
+          - SetTargetFpsCommand: Set camera FPS
+          - StationUpdateCommand: Configure station metadata
+          - ResetRepsCommand: Reset rep counter
+          - PowerCommand: Shutdown/sleep device
+          - FactoryResetCommand: Factory reset device
+          - SnapshotRequestCommand: Request device snapshot
+          - UpdateDeviceConfigCommand: Update device settings
+          - OtaBeginCommand: Begin OTA update
+          - OtaChunkCommand: Send OTA data chunk
+          - OtaCompleteCommand: Finalize OTA update
+          - ClearBondsCommand: Clear bonding data
+        </informative_text>
+      </characteristic>
+
+      <!-- Event TX Characteristic -->
+      <characteristic uuid="6E400003-B5A3-F393-E0A9-E50E24DCCA9E" name="Event TX">
+        <description>Transmit events to client (notify and read)</description>
+        <properties>
+          <notify/>
+          <read/>
+        </properties>
+        <value type="hex" length="514" variable_length="true">
+          <description>2-byte little-endian length prefix followed by DeviceEvent protobuf message</description>
+        </value>
+        <descriptor uuid="2902" name="Client Characteristic Configuration">
+          <properties>
+            <read/>
+            <write/>
+          </properties>
+        </descriptor>
+        <informative_text>
+          Event types:
+          - BootEvent: Device boot complete
+          - StatusEvent: Device status update
+          - TagEvent: AprilTag detected
+          - StationRequestEvent: Station info requested
+          - StationBroadcastEvent: Station info broadcast
+          - ScanEvent: AprilTag scan result
+          - RepEvent: Repetition counted
+          - StationReadyEvent: Station ready for use
+          - SnapshotEvent: Device state snapshot
+          - OtaStatusEvent: OTA update progress
+          - PowerEvent: Power state change
+        </informative_text>
+      </characteristic>
+
+      <!-- Device Info Characteristic -->
+      <characteristic uuid="6E400004-B5A3-F393-E0A9-E50E24DCCA9E" name="Device Info">
+        <description>Read device information (public, unencrypted)</description>
+        <properties>
+          <read/>
+        </properties>
+        <value type="utf8s" length="256" variable_length="true">
+          <description>Plain text key=value pairs (name, id, fw, ota)</description>
+        </value>
+        <informative_text>
+          Format: newline-delimited key=value pairs
+          - name: Device name (e.g., cuff-word-word-id)
+          - id: 64-bit device ID in hex
+          - fw: Firmware version string
+          - ota: OTA in progress (true/false)
+        </informative_text>
+      </characteristic>
+
+      <!-- Snapshot Characteristic -->
+      <characteristic uuid="6E400005-B5A3-F393-E0A9-E50E24DCCA9E" name="Snapshot">
+        <description>Device state snapshot (read/notify)</description>
+        <properties>
+          <read/>
+          <notify/>
+        </properties>
+        <value type="hex" length="514" variable_length="true">
+          <description>2-byte little-endian length prefix followed by SnapshotEvent protobuf</description>
+        </value>
+        <descriptor uuid="2902" name="Client Characteristic Configuration">
+          <properties>
+            <read/>
+            <write/>
+          </properties>
+        </descriptor>
+        <informative_text>
+          Contains comprehensive device state:
+          - device_id, name, mode, test_mode
+          - target_fps, loiter_fps, min_travel_cm
+          - max_rep_idle_ms, camera_ready
+          - ota_in_progress, active_tag_id
+          - BLE telemetry (MTU, connection params, disconnect reason, bonded count)
+        </informative_text>
+      </characteristic>
+
+      <!-- OTA Characteristic (Legacy) -->
+      <characteristic uuid="6E400006-B5A3-F393-E0A9-E50E24DCCA9E" name="OTA (Legacy)">
+        <description>Legacy OTA characteristic (deprecated, use DeviceCommand OTA interface)</description>
+        <properties>
+          <write authenticated="true" encrypted="true"/>
+          <write_without_response authenticated="true" encrypted="true"/>
+        </properties>
+        <value type="hex" length="512" variable_length="true">
+          <description>OTA firmware data (deprecated)</description>
+        </value>
+        <informative_text>
+          Status: Deprecated
+          This characteristic returns an error and directs clients to use the DeviceCommand OTA interface instead.
+        </informative_text>
+      </characteristic>
+
+    </service>
+  </services>
+
+  <!-- GAP Configuration -->
+  <gap>
+    <device_name>cuff-{word}-{word}-{id}</device_name>
+    <appearance>0x0000</appearance>
+    <peripheral_privacy_flag>false</peripheral_privacy_flag>
+    <reconnection_address>false</reconnection_address>
+    <peripheral_preferred_connection_parameters>
+      <min_interval>24</min_interval> <!-- 30ms -->
+      <max_interval>40</max_interval> <!-- 50ms -->
+      <slave_latency>2</slave_latency>
+      <connection_supervision_timeout_multiplier>500</connection_supervision_timeout_multiplier> <!-- 5000ms -->
+    </peripheral_preferred_connection_parameters>
+  </gap>
+
+  <!-- Advertising Data -->
+  <advertising_data>
+    <complete_local_name>cuff-{word}-{word}-{id}</complete_local_name>
+    <service_uuids>
+      <uuid>6E400001-B5A3-F393-E0A9-E50E24DCCA9E</uuid>
+    </service_uuids>
+    <manufacturer_data>
+      <company_id>0xFFFF</company_id>
+      <data type="hex" length="8" variable_length="false">
+        <description>8-byte device ID (little-endian)</description>
+      </data>
+    </manufacturer_data>
+  </advertising_data>
+
+  <!-- Security Configuration -->
+  <security>
+    <authentication>required</authentication>
+    <bonding>required</bonding>
+    <mitm_protection>required</mitm_protection>
+    <secure_connections>preferred</secure_connections>
+    <io_capabilities>DisplayOnly</io_capabilities>
+    <passkey>
+      <type>fixed</type>
+      <value>123456</value>
+      <description>Static 6-digit passkey (device-specific or default 123456)</description>
+    </passkey>
+    <encryption>
+      <key_size>16</key_size>
+    </encryption>
+  </security>
+
+  <!-- Protocol Information -->
+  <protocol_information>
+    <mtu>247</mtu>
+    <tx_power>-12</tx_power> <!-- -12 dBm -->
+    <advertising_interval>
+      <min>160</min> <!-- 100ms -->
+      <max>320</max> <!-- 200ms -->
+    </advertising_interval>
+    <payload_format>
+      <encoding>protobuf</encoding>
+      <framing>
+        <type>length_prefix</type>
+        <prefix_bytes>2</prefix_bytes>
+        <endianness>little</endianness>
+      </framing>
+      <schema_file>proto/cuff.proto</schema_file>
+    </payload_format>
+  </protocol_information>
+
+</gatt>

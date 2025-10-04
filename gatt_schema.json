@@ -1,0 +1,453 @@
+{
+  "gatt_schema": {
+    "version": "1.0",
+    "device": {
+      "name": "GymJot Cuff",
+      "manufacturer": "GymJot",
+      "manufacturer_id": "0xFFFF",
+      "firmware_version": "0.1.0",
+      "hardware": "ESP32-CAM"
+    },
+    "services": [
+      {
+        "uuid": "6E400001-B5A3-F393-E0A9-E50E24DCCA9E",
+        "name": "GymJot Cuff Service",
+        "type": "primary",
+        "description": "Custom BLE service for GymJot fitness tracking cuff device with AprilTag detection",
+        "characteristics": [
+          {
+            "uuid": "6E400002-B5A3-F393-E0A9-E50E24DCCA9E",
+            "name": "Command RX",
+            "description": "Receive commands from client (write with encryption required)",
+            "properties": [
+              "write",
+              "write_without_response"
+            ],
+            "security": {
+              "authentication": "required",
+              "encryption": "required"
+            },
+            "format": {
+              "type": "binary",
+              "encoding": "protobuf",
+              "framing": {
+                "prefix_bytes": 2,
+                "endianness": "little"
+              },
+              "message_type": "DeviceCommand",
+              "max_length": 514
+            },
+            "commands": [
+              {
+                "name": "SetTestModeCommand",
+                "description": "Enable/disable test mode",
+                "fields": {
+                  "enabled": "bool"
+                }
+              },
+              {
+                "name": "SetTargetFpsCommand",
+                "description": "Set camera FPS",
+                "fields": {
+                  "fps": "float"
+                }
+              },
+              {
+                "name": "StationUpdateCommand",
+                "description": "Configure station metadata",
+                "fields": {
+                  "station_id": "uint32",
+                  "name": "string",
+                  "metadata": "StationMetadata",
+                  "set_min_travel_cm": "bool",
+                  "min_travel_cm": "float",
+                  "set_fps": "bool",
+                  "fps": "float"
+                }
+              },
+              {
+                "name": "ResetRepsCommand",
+                "description": "Reset rep counter"
+              },
+              {
+                "name": "PowerCommand",
+                "description": "Shutdown/sleep device",
+                "fields": {
+                  "shutdown": "bool"
+                }
+              },
+              {
+                "name": "FactoryResetCommand",
+                "description": "Factory reset device",
+                "fields": {
+                  "confirm": "bool"
+                }
+              },
+              {
+                "name": "SnapshotRequestCommand",
+                "description": "Request device snapshot"
+              },
+              {
+                "name": "UpdateDeviceConfigCommand",
+                "description": "Update device settings",
+                "fields": {
+                  "set_target_fps": "bool",
+                  "target_fps": "float",
+                  "set_loiter_fps": "bool",
+                  "loiter_fps": "float",
+                  "set_min_travel_cm": "bool",
+                  "min_travel_cm": "float",
+                  "set_max_rep_idle_ms": "bool",
+                  "max_rep_idle_ms": "uint32"
+                }
+              },
+              {
+                "name": "OtaBeginCommand",
+                "description": "Begin OTA update",
+                "fields": {
+                  "total_size": "uint32",
+                  "chunk_size": "uint32",
+                  "version": "string",
+                  "sha256": "bytes"
+                }
+              },
+              {
+                "name": "OtaChunkCommand",
+                "description": "Send OTA data chunk",
+                "fields": {
+                  "offset": "uint32",
+                  "data": "bytes"
+                }
+              },
+              {
+                "name": "OtaCompleteCommand",
+                "description": "Finalize OTA update",
+                "fields": {
+                  "apply": "bool"
+                }
+              },
+              {
+                "name": "ClearBondsCommand",
+                "description": "Clear bonding data",
+                "fields": {
+                  "confirm": "bool"
+                }
+              }
+            ]
+          },
+          {
+            "uuid": "6E400003-B5A3-F393-E0A9-E50E24DCCA9E",
+            "name": "Event TX",
+            "description": "Transmit events to client (notify and read)",
+            "properties": [
+              "notify",
+              "read"
+            ],
+            "security": {
+              "authentication": "none",
+              "encryption": "none"
+            },
+            "format": {
+              "type": "binary",
+              "encoding": "protobuf",
+              "framing": {
+                "prefix_bytes": 2,
+                "endianness": "little"
+              },
+              "message_type": "DeviceEvent",
+              "max_length": 514
+            },
+            "descriptors": [
+              {
+                "uuid": "2902",
+                "name": "Client Characteristic Configuration",
+                "properties": ["read", "write"]
+              }
+            ],
+            "events": [
+              {
+                "name": "BootEvent",
+                "description": "Device boot complete",
+                "fields": {
+                  "test_mode": "bool",
+                  "mode": "DeviceMode",
+                  "fps": "float"
+                }
+              },
+              {
+                "name": "StatusEvent",
+                "description": "Device status update",
+                "fields": {
+                  "status_label": "string",
+                  "mode": "DeviceMode",
+                  "fps": "float",
+                  "test_mode": "bool"
+                }
+              },
+              {
+                "name": "TagEvent",
+                "description": "AprilTag detected",
+                "fields": {
+                  "tag_id": "uint32",
+                  "from_test_mode": "bool"
+                }
+              },
+              {
+                "name": "StationRequestEvent",
+                "description": "Station info requested",
+                "fields": {
+                  "tag_id": "uint32"
+                }
+              },
+              {
+                "name": "StationBroadcastEvent",
+                "description": "Station info broadcast",
+                "fields": {
+                  "station_id": "uint32",
+                  "name": "string",
+                  "metadata": "StationMetadata",
+                  "from_test_mode": "bool"
+                }
+              },
+              {
+                "name": "ScanEvent",
+                "description": "AprilTag scan result",
+                "fields": {
+                  "tag_id": "uint32",
+                  "distance_cm": "float",
+                  "mode": "DeviceMode",
+                  "fps": "float",
+                  "has_station_name": "bool",
+                  "station_name": "string"
+                }
+              },
+              {
+                "name": "RepEvent",
+                "description": "Repetition counted",
+                "fields": {
+                  "tag_id": "uint32",
+                  "rep_count": "uint32",
+                  "has_station_name": "bool",
+                  "station_name": "string"
+                }
+              },
+              {
+                "name": "StationReadyEvent",
+                "description": "Station ready for use",
+                "fields": {
+                  "station_id": "uint32"
+                }
+              },
+              {
+                "name": "SnapshotEvent",
+                "description": "Device state snapshot",
+                "fields": {
+                  "device_id": "uint64",
+                  "name": "string",
+                  "mode": "DeviceMode",
+                  "test_mode": "bool",
+                  "target_fps": "float",
+                  "loiter_fps": "float",
+                  "min_travel_cm": "float",
+                  "max_rep_idle_ms": "uint32",
+                  "camera_ready": "bool",
+                  "ota_in_progress": "bool",
+                  "active_tag_id": "uint32",
+                  "ble_connected": "bool",
+                  "ble_mtu": "uint32",
+                  "conn_interval_ms": "uint32",
+                  "conn_latency": "uint32",
+                  "supervision_timeout_ms": "uint32",
+                  "last_disconnect_reason": "uint32",
+                  "bonded_count": "uint32"
+                }
+              },
+              {
+                "name": "OtaStatusEvent",
+                "description": "OTA update progress",
+                "fields": {
+                  "phase": "OtaPhase",
+                  "message": "string",
+                  "bytes_transferred": "uint32",
+                  "total_bytes": "uint32",
+                  "success": "bool"
+                }
+              },
+              {
+                "name": "PowerEvent",
+                "description": "Power state change",
+                "fields": {
+                  "state": "string"
+                }
+              }
+            ]
+          },
+          {
+            "uuid": "6E400004-B5A3-F393-E0A9-E50E24DCCA9E",
+            "name": "Device Info",
+            "description": "Read device information (public, unencrypted)",
+            "properties": [
+              "read"
+            ],
+            "security": {
+              "authentication": "none",
+              "encryption": "none"
+            },
+            "format": {
+              "type": "text",
+              "encoding": "utf-8",
+              "structure": "key=value pairs (newline delimited)",
+              "max_length": 256
+            },
+            "fields": [
+              {
+                "key": "name",
+                "description": "Device name (e.g., cuff-word-word-id)",
+                "type": "string"
+              },
+              {
+                "key": "id",
+                "description": "64-bit device ID in hexadecimal",
+                "type": "string"
+              },
+              {
+                "key": "fw",
+                "description": "Firmware version string",
+                "type": "string"
+              },
+              {
+                "key": "ota",
+                "description": "OTA in progress (true/false)",
+                "type": "boolean"
+              }
+            ]
+          },
+          {
+            "uuid": "6E400005-B5A3-F393-E0A9-E50E24DCCA9E",
+            "name": "Snapshot",
+            "description": "Device state snapshot (read/notify)",
+            "properties": [
+              "read",
+              "notify"
+            ],
+            "security": {
+              "authentication": "none",
+              "encryption": "none"
+            },
+            "format": {
+              "type": "binary",
+              "encoding": "protobuf",
+              "framing": {
+                "prefix_bytes": 2,
+                "endianness": "little"
+              },
+              "message_type": "SnapshotEvent",
+              "max_length": 514
+            },
+            "descriptors": [
+              {
+                "uuid": "2902",
+                "name": "Client Characteristic Configuration",
+                "properties": ["read", "write"]
+              }
+            ]
+          },
+          {
+            "uuid": "6E400006-B5A3-F393-E0A9-E50E24DCCA9E",
+            "name": "OTA (Legacy)",
+            "description": "Legacy OTA characteristic (deprecated, use DeviceCommand OTA interface)",
+            "properties": [
+              "write",
+              "write_without_response"
+            ],
+            "security": {
+              "authentication": "required",
+              "encryption": "required"
+            },
+            "format": {
+              "type": "binary",
+              "max_length": 512
+            },
+            "status": "deprecated",
+            "deprecation_note": "This characteristic returns an error and directs clients to use the DeviceCommand OTA interface instead"
+          }
+        ]
+      }
+    ],
+    "advertising": {
+      "device_name": {
+        "format": "cuff-{word}-{word}-{id}",
+        "example": "cuff-alpha-bravo-abc123"
+      },
+      "service_uuids": [
+        "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+      ],
+      "manufacturer_data": {
+        "company_id": "0xFFFF",
+        "format": "8-byte device ID (little-endian)",
+        "length": 8
+      },
+      "interval": {
+        "min_ms": 100,
+        "max_ms": 200,
+        "min_units": 160,
+        "max_units": 320,
+        "unit_duration_ms": 0.625
+      }
+    },
+    "security": {
+      "authentication": "required",
+      "bonding": "required",
+      "mitm_protection": "required",
+      "secure_connections": "preferred",
+      "io_capabilities": "DisplayOnly",
+      "passkey": {
+        "type": "fixed",
+        "default_value": "123456",
+        "description": "Static 6-digit passkey (device-specific or default 123456)"
+      },
+      "encryption": {
+        "key_size_bytes": 16
+      }
+    },
+    "connection_parameters": {
+      "mtu": 247,
+      "tx_power_dbm": -12,
+      "preferred_params": {
+        "min_interval_ms": 30,
+        "max_interval_ms": 50,
+        "min_interval_units": 24,
+        "max_interval_units": 40,
+        "slave_latency": 2,
+        "supervision_timeout_ms": 5000,
+        "supervision_timeout_units": 500,
+        "unit_duration_ms": 1.25
+      }
+    },
+    "enumerations": {
+      "DeviceMode": {
+        "DEVICE_MODE_IDLE": 0,
+        "DEVICE_MODE_AWAITING_STATION": 1,
+        "DEVICE_MODE_SCANNING": 2,
+        "DEVICE_MODE_LOITER": 3
+      },
+      "OtaPhase": {
+        "OTA_PHASE_IDLE": 0,
+        "OTA_PHASE_PREPARING": 1,
+        "OTA_PHASE_TRANSFER": 2,
+        "OTA_PHASE_APPLYING": 3,
+        "OTA_PHASE_ERROR": 4
+      }
+    },
+    "protocol": {
+      "schema_file": "proto/cuff.proto",
+      "encoding": "protobuf",
+      "framing": {
+        "type": "length_prefix",
+        "prefix_bytes": 2,
+        "endianness": "little",
+        "max_payload_bytes": 512
+      }
+    }
+  }
+}

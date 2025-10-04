@@ -1,0 +1,56 @@
+[
+    {
+        "command": "C:\\msys64\\mingw64\\bin\\gcc.exe -o .pio\\build\\native\\lib0de\\Nanopb\\pb_common.o -c -DPLATFORMIO=60118 -I.pio\\libdeps\\native\\Nanopb -Iinclude .pio\\libdeps\\native\\Nanopb\\pb_common.c",
+        "directory": "C:\\Users\\Scott\\Desktop\\gymjot-cuff",
+        "file": ".pio\\libdeps\\native\\Nanopb\\pb_common.c",
+        "output": ".pio\\build\\native\\lib0de\\Nanopb\\pb_common.o"
+    },
+    {
+        "command": "C:\\msys64\\mingw64\\bin\\gcc.exe -o .pio\\build\\native\\lib0de\\Nanopb\\pb_decode.o -c -DPLATFORMIO=60118 -I.pio\\libdeps\\native\\Nanopb -Iinclude .pio\\libdeps\\native\\Nanopb\\pb_decode.c",
+        "directory": "C:\\Users\\Scott\\Desktop\\gymjot-cuff",
+        "file": ".pio\\libdeps\\native\\Nanopb\\pb_decode.c",
+        "output": ".pio\\build\\native\\lib0de\\Nanopb\\pb_decode.o"
+    },
+    {
+        "command": "C:\\msys64\\mingw64\\bin\\gcc.exe -o .pio\\build\\native\\lib0de\\Nanopb\\pb_encode.o -c -DPLATFORMIO=60118 -I.pio\\libdeps\\native\\Nanopb -Iinclude .pio\\libdeps\\native\\Nanopb\\pb_encode.c",
+        "directory": "C:\\Users\\Scott\\Desktop\\gymjot-cuff",
+        "file": ".pio\\libdeps\\native\\Nanopb\\pb_encode.c",
+        "output": ".pio\\build\\native\\lib0de\\Nanopb\\pb_encode.o"
+    },
+    {
+        "command": "C:\\msys64\\mingw64\\bin\\gcc.exe -o .pio\\build\\native\\libdd8\\Unity\\unity.o -c -DPLATFORMIO=60118 -DUNITY_INCLUDE_CONFIG_H -I.pio\\libdeps\\native\\Unity\\src -Iinclude -Iinclude .pio\\libdeps\\native\\Unity\\src\\unity.c",
+        "directory": "C:\\Users\\Scott\\Desktop\\gymjot-cuff",
+        "file": ".pio\\libdeps\\native\\Unity\\src\\unity.c",
+        "output": ".pio\\build\\native\\libdd8\\Unity\\unity.o"
+    },
+    {
+        "command": "C:\\msys64\\mingw64\\bin\\g++.exe -o .pio\\build\\native\\src\\CuffController.o -c -std=gnu++17 -DPLATFORMIO=60118 -Isrc -I.pio\\libdeps\\native\\Unity\\src -I.pio\\libdeps\\native\\Nanopb -Iinclude src\\CuffController.cpp",
+        "directory": "C:\\Users\\Scott\\Desktop\\gymjot-cuff",
+        "file": "src\\CuffController.cpp",
+        "output": ".pio\\build\\native\\src\\CuffController.o"
+    },
+    {
+        "command": "C:\\msys64\\mingw64\\bin\\g++.exe -o .pio\\build\\native\\src\\DeviceIdentity.o -c -std=gnu++17 -DPLATFORMIO=60118 -Isrc -I.pio\\libdeps\\native\\Unity\\src -I.pio\\libdeps\\native\\Nanopb -Iinclude src\\DeviceIdentity.cpp",
+        "directory": "C:\\Users\\Scott\\Desktop\\gymjot-cuff",
+        "file": "src\\DeviceIdentity.cpp",
+        "output": ".pio\\build\\native\\src\\DeviceIdentity.o"
+    },
+    {
+        "command": "C:\\msys64\\mingw64\\bin\\g++.exe -o .pio\\build\\native\\src\\PersistentConfig.o -c -std=gnu++17 -DPLATFORMIO=60118 -Isrc -I.pio\\libdeps\\native\\Unity\\src -I.pio\\libdeps\\native\\Nanopb -Iinclude src\\PersistentConfig.cpp",
+        "directory": "C:\\Users\\Scott\\Desktop\\gymjot-cuff",
+        "file": "src\\PersistentConfig.cpp",
+        "output": ".pio\\build\\native\\src\\PersistentConfig.o"
+    },
+    {
+        "command": "C:\\msys64\\mingw64\\bin\\g++.exe -o .pio\\build\\native\\src\\native_entry.o -c -std=gnu++17 -DPLATFORMIO=60118 -Isrc -I.pio\\libdeps\\native\\Unity\\src -I.pio\\libdeps\\native\\Nanopb -Iinclude src\\native_entry.cpp",
+        "directory": "C:\\Users\\Scott\\Desktop\\gymjot-cuff",
+        "file": "src\\native_entry.cpp",
+        "output": ".pio\\build\\native\\src\\native_entry.o"
+    },
+    {
+        "command": "C:\\msys64\\mingw64\\bin\\gcc.exe -o .pio\\build\\native\\src\\proto\\cuff.pb.o -c -DPLATFORMIO=60118 -Isrc -I.pio\\libdeps\\native\\Unity\\src -I.pio\\libdeps\\native\\Nanopb -Iinclude src\\proto\\cuff.pb.c",
+        "directory": "C:\\Users\\Scott\\Desktop\\gymjot-cuff",
+        "file": "src\\proto\\cuff.pb.c",
+        "output": ".pio\\build\\native\\src\\proto\\cuff.pb.o"
+    }
+]

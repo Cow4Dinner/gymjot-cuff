@@ -47,6 +47,109 @@ pio test -e native
   - Invoke `gymjot::clearDeviceIdentity()` and `gymjot::clearPersistentSettings()` (done automatically by the factory reset command).
 - After a factory reset, the cuff regenerates its name, device ID, and passkey; bonding is required again before reconnecting.
 
+## GATT Schema
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ Service: GymJot Cuff Service                                        │
+│ UUID: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ Command RX Characteristic                                    │   │
+│  │ UUID: 6E400002-B5A3-F393-E0A9-E50E24DCCA9E                   │   │
+│  │ Properties: WRITE, WRITE_NO_RESPONSE                         │   │
+│  │ Security: WRITE_ENC (Encryption Required)                    │   │
+│  │ Format: [2-byte length][DeviceCommand protobuf]              │   │
+│  │                                                              │   │
+│  │ Commands:                                                    │   │
+│  │   • SetTestModeCommand        - Enable/disable test mode    │   │
+│  │   • SetTargetFpsCommand        - Set camera FPS             │   │
+│  │   • StationUpdateCommand       - Configure station metadata │   │
+│  │   • ResetRepsCommand           - Reset rep counter          │   │
+│  │   • PowerCommand               - Shutdown/sleep device      │   │
+│  │   • FactoryResetCommand        - Factory reset device       │   │
+│  │   • SnapshotRequestCommand     - Request device snapshot    │   │
+│  │   • UpdateDeviceConfigCommand  - Update device settings     │   │
+│  │   • OtaBeginCommand            - Begin OTA update           │   │
+│  │   • OtaChunkCommand            - Send OTA data chunk        │   │
+│  │   • OtaCompleteCommand         - Finalize OTA update        │   │
+│  │   • ClearBondsCommand          - Clear bonding data         │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ Event TX Characteristic                                      │   │
+│  │ UUID: 6E400003-B5A3-F393-E0A9-E50E24DCCA9E                   │   │
+│  │ Properties: NOTIFY, READ                                     │   │
+│  │ Security: None (discovery allowed)                           │   │
+│  │ Format: [2-byte length][DeviceEvent protobuf]                │   │
+│  │                                                              │   │
+│  │ Events:                                                      │   │
+│  │   • BootEvent             - Device boot complete            │   │
+│  │   • StatusEvent           - Device status update            │   │
+│  │   • TagEvent              - AprilTag detected               │   │
+│  │   • StationRequestEvent   - Station info requested          │   │
+│  │   • StationBroadcastEvent - Station info broadcast          │   │
+│  │   • ScanEvent             - AprilTag scan result            │   │
+│  │   • RepEvent              - Repetition counted              │   │
+│  │   • StationReadyEvent     - Station ready for use           │   │
+│  │   • SnapshotEvent         - Device state snapshot           │   │
+│  │   • OtaStatusEvent        - OTA update progress             │   │
+│  │   • PowerEvent            - Power state change              │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ Device Info Characteristic                                   │   │
+│  │ UUID: 6E400004-B5A3-F393-E0A9-E50E24DCCA9E                   │   │
+│  │ Properties: READ                                             │   │
+│  │ Security: None (public info)                                 │   │
+│  │ Format: Plain text key=value pairs                          │   │
+│  │                                                              │   │
+│  │ Fields:                                                      │   │
+│  │   • name  - Device name (cuff-word-word-id)                 │   │
+│  │   • id    - 64-bit device ID (hex)                          │   │
+│  │   • fw    - Firmware version string                         │   │
+│  │   • ota   - OTA in progress (true/false)                    │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ Snapshot Characteristic                                      │   │
+│  │ UUID: 6E400005-B5A3-F393-E0A9-E50E24DCCA9E                   │   │
+│  │ Properties: READ, NOTIFY                                     │   │
+│  │ Security: None (discovery allowed)                           │   │
+│  │ Format: [2-byte length][SnapshotEvent protobuf]              │   │
+│  │                                                              │   │
+│  │ Contains:                                                    │   │
+│  │   • device_id, name, mode, test_mode                        │   │
+│  │   • target_fps, loiter_fps, min_travel_cm                   │   │
+│  │   • max_rep_idle_ms, camera_ready                           │   │
+│  │   • ota_in_progress, active_tag_id                          │   │
+│  │   • BLE telemetry (MTU, conn params, etc.)                  │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ OTA Characteristic (Legacy)                                  │   │
+│  │ UUID: 6E400006-B5A3-F393-E0A9-E50E24DCCA9E                   │   │
+│  │ Properties: WRITE, WRITE_NO_RESPONSE                         │   │
+│  │ Security: WRITE_ENC (Encryption Required)                    │   │
+│  │ Status: Deprecated - Use DeviceCommand OTA interface         │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+
+Advertising Data:
+  • Device Name: cuff-{word}-{word}-{base32id}
+  • Manufacturer Data: [0xFFFF][8-byte device ID, little-endian]
+  • Service UUID: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+
+Security:
+  • Authentication: Required (MITM protection)
+  • Bonding: Required
+  • Encryption: Required for Command RX
+  • Passkey: Static 6-digit (123456 or device-specific)
+  • IO Capability: Display Only
+```
+
 ## BLE Interface Overview
 - **Advertising**
   - Device name: `cuff-{word}-{word}-{base32id}`
