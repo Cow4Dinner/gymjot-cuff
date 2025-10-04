@@ -13,10 +13,10 @@
 #define DEFAULT_MIN_REP_TRAVEL_CM 12.0f
 #define DEFAULT_MAX_REP_IDLE_MS 5000
 
-#define TEST_STATION_ID 4242
-#define TEST_STATION_NAME "Demo Station"
+#define TEST_EXERCISE_ID 4242
+#define TEST_EXERCISE_NAME "Demo Exercise"
 
-inline gymjot::MetadataList defaultTestStationMetadata() {
+inline gymjot::MetadataList defaultTestExerciseMetadata() {
     return gymjot::MetadataList{
         {"exercise", "Lat Pulldown"},
         {"muscleGroup", "Back"},

@@ -16,8 +16,8 @@ com_gymjot_cuff_DeviceMode toProto(DeviceMode mode) {
     switch (mode) {
         case DeviceMode::Idle:
             return com_gymjot_cuff_DeviceMode_DEVICE_MODE_IDLE;
-        case DeviceMode::AwaitingStation:
-            return com_gymjot_cuff_DeviceMode_DEVICE_MODE_AWAITING_STATION;
+        case DeviceMode::AwaitingExercise:
+            return com_gymjot_cuff_DeviceMode_DEVICE_MODE_AWAITING_EXERCISE;
         case DeviceMode::Scanning:
             return com_gymjot_cuff_DeviceMode_DEVICE_MODE_SCANNING;
         case DeviceMode::Loiter:
@@ -34,7 +34,7 @@ void copyString(const std::string& source, char* dest, size_t capacity) {
     std::strncpy(dest, source.c_str(), capacity - 1);
 }
 
-void populateMetadata(const MetadataList& source, com_gymjot_cuff_StationMetadata& target) {
+void populateMetadata(const MetadataList& source, com_gymjot_cuff_ExerciseMetadata& target) {
     std::memset(&target, 0, sizeof(target));
     target.entries_count = static_cast<pb_size_t>(std::min<size_t>(source.size(), kMaxMetadataEntries));
     for (pb_size_t i = 0; i < target.entries_count; ++i) {
@@ -46,7 +46,7 @@ void populateMetadata(const MetadataList& source, com_gymjot_cuff_StationMetadat
 
 }  // namespace
 
-void StationSession::reset() {
+void ExerciseSession::reset() {
     active = false;
     metadataReady = false;
     requestSent = false;
@@ -278,18 +278,18 @@ void CuffController::handleDetection(const AprilTagDetection& detection, uint64_
         session_.requestSent = false;
         session_.lastRequestMs = 0;
         repTracker_.reset();
-        deviceMode_ = DeviceMode::AwaitingStation;
+        deviceMode_ = DeviceMode::AwaitingExercise;
         sendTagAnnouncement(detection.tagId, nowMs, testMode_);
-        notifyStatus("awaitingStation", nowMs);
+        notifyStatus("awaitingExercise", nowMs);
     }
 
     session_.lastSeenMs = nowMs;
 
     if (!session_.metadataReady) {
         if (testMode_) {
-            applyStationMetadata(detection.tagId, config_.testStationName, config_.testStationMetadata, nowMs);
+            applyExerciseMetadata(detection.tagId, config_.testExerciseName, config_.testExerciseMetadata, nowMs);
         } else if (!session_.requestSent || (nowMs - session_.lastRequestMs) >= 1000) {
-            sendStationRequest(detection.tagId, nowMs);
+            sendExerciseRequest(detection.tagId, nowMs);
             session_.requestSent = true;
             session_.lastRequestMs = nowMs;
         }
@@ -323,17 +323,17 @@ void CuffController::maintainTestMode(uint64_t nowMs) {
 void CuffController::startTestSession(uint64_t nowMs) {
     session_.reset();
     session_.active = true;
-    session_.tagId = config_.testStationId;
+    session_.tagId = config_.testExerciseId;
     session_.lastSeenMs = nowMs;
     repTracker_.reset();
-    deviceMode_ = DeviceMode::AwaitingStation;
+    deviceMode_ = DeviceMode::AwaitingExercise;
 
-    sendStationBroadcast(config_.testStationId, config_.testStationName, config_.testStationMetadata, nowMs, true);
-    applyStationMetadata(config_.testStationId, config_.testStationName, config_.testStationMetadata, nowMs);
+    sendExerciseBroadcast(config_.testExerciseId, config_.testExerciseName, config_.testExerciseMetadata, nowMs, true);
+    applyExerciseMetadata(config_.testExerciseId, config_.testExerciseName, config_.testExerciseMetadata, nowMs);
     testSimulator_.reset();
 }
 
-void CuffController::applyStationMetadata(uint32_t tagId, const std::string& name, const MetadataList& metadata, uint64_t nowMs) {
+void CuffController::applyExerciseMetadata(uint32_t tagId, const std::string& name, const MetadataList& metadata, uint64_t nowMs) {
     session_.tagId = tagId;
     session_.metadataReady = true;
     session_.requestSent = true;
@@ -348,7 +348,7 @@ void CuffController::applyStationMetadata(uint32_t tagId, const std::string& nam
     notifyStatus("scanning", nowMs);
 }
 
-void CuffController::handleStationPayload(const StationPayload& payload, uint64_t nowMs) {
+void CuffController::handleExercisePayload(const ExercisePayload& payload, uint64_t nowMs) {
     if (!session_.active || session_.tagId != payload.id) {
         return;
     }
@@ -360,7 +360,7 @@ void CuffController::handleStationPayload(const StationPayload& payload, uint64_
         setTargetFps(payload.fps.value(), nowMs);
     }
 
-    applyStationMetadata(payload.id, payload.name, payload.metadata, nowMs);
+    applyExerciseMetadata(payload.id, payload.name, payload.metadata, nowMs);
 
     if (!send_) {
         return;
@@ -368,8 +368,8 @@ void CuffController::handleStationPayload(const StationPayload& payload, uint64_
 
     com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
     evt.timestamp_ms = nowMs;
-    evt.which_event = com_gymjot_cuff_DeviceEvent_station_ready_tag;
-    evt.event.station_ready.station_id = payload.id;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_exercise_ready_tag;
+    evt.event.exercise_ready.exercise_id = payload.id;
     send_(evt);
 }
 
@@ -407,30 +407,30 @@ void CuffController::sendTagAnnouncement(uint32_t tagId, uint64_t nowMs, bool fr
     send_(evt);
 }
 
-void CuffController::sendStationRequest(uint32_t tagId, uint64_t nowMs) {
+void CuffController::sendExerciseRequest(uint32_t tagId, uint64_t nowMs) {
     if (!send_) {
         return;
     }
 
     com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
     evt.timestamp_ms = nowMs;
-    evt.which_event = com_gymjot_cuff_DeviceEvent_station_request_tag;
-    evt.event.station_request.tag_id = tagId;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_exercise_request_tag;
+    evt.event.exercise_request.tag_id = tagId;
 
     send_(evt);
 }
 
-void CuffController::sendStationBroadcast(uint32_t id, const std::string& name, const MetadataList& metadata, uint64_t nowMs, bool fromTest) {
+void CuffController::sendExerciseBroadcast(uint32_t id, const std::string& name, const MetadataList& metadata, uint64_t nowMs, bool fromTest) {
     if (!send_) {
         return;
     }
 
     com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
     evt.timestamp_ms = nowMs;
-    evt.which_event = com_gymjot_cuff_DeviceEvent_station_broadcast_tag;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_exercise_broadcast_tag;
 
-    auto& broadcast = evt.event.station_broadcast;
-    broadcast.station_id = id;
+    auto& broadcast = evt.event.exercise_broadcast;
+    broadcast.exercise_id = id;
     broadcast.from_test_mode = fromTest;
     copyString(name, broadcast.name, sizeof(broadcast.name));
     populateMetadata(metadata, broadcast.metadata);
@@ -455,11 +455,11 @@ void CuffController::sendScan(const AprilTagDetection& detection, uint64_t nowMs
     scan.fps = (deviceMode_ == DeviceMode::Loiter) ? config_.loiterFps : targetFps_;
 
     if (session_.metadataReady && !session_.name.empty()) {
-        scan.has_station_name = true;
-        copyString(session_.name, scan.station_name, sizeof(scan.station_name));
+        scan.has_exercise_name = true;
+        copyString(session_.name, scan.exercise_name, sizeof(scan.exercise_name));
     } else {
-        scan.has_station_name = false;
-        scan.station_name[0] = '\0';
+        scan.has_exercise_name = false;
+        scan.exercise_name[0] = '\0';
     }
 
     send_(evt);
@@ -479,11 +479,11 @@ void CuffController::sendRep(uint64_t nowMs) {
     rep.rep_count = repTracker_.count();
 
     if (session_.metadataReady && !session_.name.empty()) {
-        rep.has_station_name = true;
-        copyString(session_.name, rep.station_name, sizeof(rep.station_name));
+        rep.has_exercise_name = true;
+        copyString(session_.name, rep.exercise_name, sizeof(rep.exercise_name));
     } else {
-        rep.has_station_name = false;
-        rep.station_name[0] = '\0';
+        rep.has_exercise_name = false;
+        rep.exercise_name[0] = '\0';
     }
 
     send_(evt);

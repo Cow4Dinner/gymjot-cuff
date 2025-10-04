@@ -49,7 +49,7 @@ extern "C" {
 using gymjot::AprilTagDetection;
 using gymjot::ControllerConfig;
 using gymjot::CuffController;
-using gymjot::StationPayload;
+using gymjot::ExercisePayload;
 
 static NimBLEServer* g_server = nullptr;
 static NimBLECharacteristic* g_tx = nullptr;
@@ -89,8 +89,8 @@ static com_gymjot_cuff_DeviceMode toProtoMode(gymjot::DeviceMode mode) {
     switch (mode) {
         case gymjot::DeviceMode::Idle:
             return com_gymjot_cuff_DeviceMode_DEVICE_MODE_IDLE;
-        case gymjot::DeviceMode::AwaitingStation:
-            return com_gymjot_cuff_DeviceMode_DEVICE_MODE_AWAITING_STATION;
+        case gymjot::DeviceMode::AwaitingExercise:
+            return com_gymjot_cuff_DeviceMode_DEVICE_MODE_AWAITING_EXERCISE;
         case gymjot::DeviceMode::Scanning:
             return com_gymjot_cuff_DeviceMode_DEVICE_MODE_SCANNING;
         case gymjot::DeviceMode::Loiter:
@@ -99,7 +99,7 @@ static com_gymjot_cuff_DeviceMode toProtoMode(gymjot::DeviceMode mode) {
     return com_gymjot_cuff_DeviceMode_DEVICE_MODE_IDLE;
 }
 
-static gymjot::MetadataList metadataFromProto(const com_gymjot_cuff_StationMetadata& metadata) {
+static gymjot::MetadataList metadataFromProto(const com_gymjot_cuff_ExerciseMetadata& metadata) {
     gymjot::MetadataList result;
     result.reserve(metadata.entries_count);
     for (pb_size_t i = 0; i < metadata.entries_count; ++i) {
@@ -512,9 +512,9 @@ static void setupController() {
     cfg.tagLostMs = APRILTAG_LOST_MS;
     cfg.defaultMinTravelCm = DEFAULT_MIN_REP_TRAVEL_CM;
     cfg.maxRepIdleMs = DEFAULT_MAX_REP_IDLE_MS;
-    cfg.testStationId = TEST_STATION_ID;
-    cfg.testStationName = TEST_STATION_NAME;
-    cfg.testStationMetadata = defaultTestStationMetadata();
+    cfg.testExerciseId = TEST_EXERCISE_ID;
+    cfg.testExerciseName = TEST_EXERCISE_NAME;
+    cfg.testExerciseMetadata = defaultTestExerciseMetadata();
 
     g_controller = std::make_unique<CuffController>(cfg, sendEvent);
 }
@@ -828,10 +828,10 @@ void processCommand(const uint8_t* data, size_t len) {
             g_controller->setTargetFps(cmd.command.set_target_fps.fps, now);
             updateSnapshotCharacteristic(now);
             break;
-        case com_gymjot_cuff_DeviceCommand_station_update_tag: {
-            const auto& update = cmd.command.station_update;
-            StationPayload payload;
-            payload.id = update.station_id;
+        case com_gymjot_cuff_DeviceCommand_exercise_update_tag: {
+            const auto& update = cmd.command.exercise_update;
+            ExercisePayload payload;
+            payload.id = update.exercise_id;
             payload.name = update.name;
             if (update.set_min_travel_cm) {
                 payload.minTravelCm = update.min_travel_cm;
@@ -842,7 +842,7 @@ void processCommand(const uint8_t* data, size_t len) {
             if (update.has_metadata) {
                 payload.metadata = metadataFromProto(update.metadata);
             }
-            g_controller->handleStationPayload(payload, now);
+            g_controller->handleExercisePayload(payload, now);
             updateSnapshotCharacteristic(now);
             break;
         }
@@ -1079,7 +1079,7 @@ void loop() {
         bool hasDetection = false;
 
         if (g_controller && g_controller->testMode()) {
-            uint32_t id = g_controller->session().active ? g_controller->session().tagId : TEST_STATION_ID;
+            uint32_t id = g_controller->session().active ? g_controller->session().tagId : TEST_EXERCISE_ID;
             hasDetection = g_controller->testSimulator().generate(id, detection);
         } else {
             hasDetection = captureAprilTag(detection);

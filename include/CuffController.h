@@ -13,14 +13,14 @@
 
 namespace gymjot {
 
-enum class DeviceMode { Idle, AwaitingStation, Scanning, Loiter };
+enum class DeviceMode { Idle, AwaitingExercise, Scanning, Loiter };
 
 struct AprilTagDetection {
     uint32_t tagId = 0;
     float distanceCm = 0.0f;
 };
 
-struct StationSession {
+struct ExerciseSession {
     bool active = false;
     bool metadataReady = false;
     bool requestSent = false;
@@ -79,12 +79,12 @@ struct ControllerConfig {
     uint32_t tagLostMs = 10000;
     float defaultMinTravelCm = 12.0f;
     uint32_t maxRepIdleMs = 5000;
-    uint32_t testStationId = 4242;
-    std::string testStationName = "Demo Station";
-    MetadataList testStationMetadata;
+    uint32_t testExerciseId = 4242;
+    std::string testExerciseName = "Demo Exercise";
+    MetadataList testExerciseMetadata;
 };
 
-struct StationPayload {
+struct ExercisePayload {
     uint32_t id = 0;
     std::string name;
     MetadataList metadata;
@@ -118,8 +118,8 @@ public:
     DeviceMode mode() const { return deviceMode_; }
     float frameIntervalMs() const;
 
-    StationSession& session() { return session_; }
-    const StationSession& session() const { return session_; }
+    ExerciseSession& session() { return session_; }
+    const ExerciseSession& session() const { return session_; }
     RepTracker& repTracker() { return repTracker_; }
     const RepTracker& repTracker() const { return repTracker_; }
     TestModeSimulator& testSimulator() { return testSimulator_; }
@@ -128,16 +128,16 @@ public:
     void evaluateTimeouts(uint64_t nowMs);
     void maintainTestMode(uint64_t nowMs);
     void startTestSession(uint64_t nowMs);
-    void applyStationMetadata(uint32_t tagId, const std::string& name, const MetadataList& metadata, uint64_t nowMs);
-    void handleStationPayload(const StationPayload& payload, uint64_t nowMs);
+    void applyExerciseMetadata(uint32_t tagId, const std::string& name, const MetadataList& metadata, uint64_t nowMs);
+    void handleExercisePayload(const ExercisePayload& payload, uint64_t nowMs);
 
     void setSendCallback(SendCallback cb) { send_ = std::move(cb); }
 
 private:
     void notifyStatus(const std::string& status, uint64_t nowMs);
     void sendTagAnnouncement(uint32_t tagId, uint64_t nowMs, bool fromTest);
-    void sendStationRequest(uint32_t tagId, uint64_t nowMs);
-    void sendStationBroadcast(uint32_t id, const std::string& name, const MetadataList& metadata, uint64_t nowMs, bool fromTest);
+    void sendExerciseRequest(uint32_t tagId, uint64_t nowMs);
+    void sendExerciseBroadcast(uint32_t id, const std::string& name, const MetadataList& metadata, uint64_t nowMs, bool fromTest);
     void sendScan(const AprilTagDetection& detection, uint64_t nowMs);
     void sendRep(uint64_t nowMs);
     void enterLoiter(uint64_t nowMs);
@@ -149,7 +149,7 @@ private:
     bool testMode_ = true;
     float targetFps_ = 8.0f;
     DeviceMode deviceMode_ = DeviceMode::Idle;
-    StationSession session_;
+    ExerciseSession session_;
     RepTracker repTracker_;
     TestModeSimulator testSimulator_;
 };
