@@ -10,7 +10,8 @@
       "Bash(C:UsersScott.platformiopenvScriptsnanopb_generator.exe -I proto -D include/proto proto/cuff.proto)",
       "Bash(C:UsersScott.platformiopenvScriptsnanopb_generator.exe -I proto -D src/proto proto/cuff.proto)",
       "Bash(\"C:\\Users\\Scott\\.platformio\\penv\\Scripts\\nanopb_generator.exe\" -I proto -D include/proto proto/cuff.proto)",
-      "Bash(\"C:\\Users\\Scott\\.platformio\\penv\\Scripts\\nanopb_generator.exe\" -I proto -D src/proto proto/cuff.proto)"
+      "Bash(\"C:\\Users\\Scott\\.platformio\\penv\\Scripts\\nanopb_generator.exe\" -I proto -D src/proto proto/cuff.proto)",
+      "Read(//c/Users/Scott/Desktop/gym-jot-mobile/**)"
     ],
     "deny": [],
     "ask": []

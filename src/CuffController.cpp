@@ -6,11 +6,32 @@
 #include <cstring>
 #include <limits>
 
+#ifdef ARDUINO
+#include <Arduino.h>
+#endif
+
 namespace gymjot {
 
 namespace {
 
 constexpr size_t kMaxMetadataEntries = 10;
+
+void printSanitizedLine(const char* prefix, const std::string& value) {
+#ifdef ARDUINO
+    Serial.print(prefix);
+    for (unsigned char c : value) {
+        if (c >= 32 && c <= 126) {
+            Serial.print(static_cast<char>(c));
+        } else {
+            Serial.print('?');
+        }
+    }
+    Serial.println();
+#else
+    (void)prefix;
+    (void)value;
+#endif
+}
 
 com_gymjot_cuff_DeviceMode toProto(DeviceMode mode) {
     switch (mode) {
@@ -281,6 +302,13 @@ void CuffController::handleDetection(const AprilTagDetection& detection, uint64_
         deviceMode_ = DeviceMode::AwaitingExercise;
         sendTagAnnouncement(detection.tagId, nowMs, testMode_);
         notifyStatus("awaitingExercise", nowMs);
+
+        // Debug output
+#ifdef ARDUINO
+        Serial.println("[CONTROLLER] New AprilTag session");
+        Serial.print("[CONTROLLER] Tag ID: ");
+        Serial.println(detection.tagId);
+#endif
     }
 
     session_.lastSeenMs = nowMs;
@@ -288,10 +316,16 @@ void CuffController::handleDetection(const AprilTagDetection& detection, uint64_
     if (!session_.metadataReady) {
         if (testMode_) {
             applyExerciseMetadata(detection.tagId, config_.testExerciseName, config_.testExerciseMetadata, nowMs);
+#ifdef ARDUINO
+            Serial.println("[CONTROLLER] Test exercise metadata applied");
+#endif
         } else if (!session_.requestSent || (nowMs - session_.lastRequestMs) >= 1000) {
             sendExerciseRequest(detection.tagId, nowMs);
             session_.requestSent = true;
             session_.lastRequestMs = nowMs;
+#ifdef ARDUINO
+            Serial.println("[CONTROLLER] Requested exercise metadata from mobile app");
+#endif
         }
         return;
     }
@@ -300,6 +334,12 @@ void CuffController::handleDetection(const AprilTagDetection& detection, uint64_
     sendScan(detection, nowMs);
 
     if (repTracker_.update(detection.distanceCm, nowMs)) {
+#ifdef ARDUINO
+        Serial.println("[REPS] -------------------------------");
+        Serial.print("[REPS] Rep #: ");
+        Serial.println(repTracker_.count());
+        printSanitizedLine("[REPS] Exercise: ", session_.name);
+#endif
         sendRep(nowMs);
     }
 }

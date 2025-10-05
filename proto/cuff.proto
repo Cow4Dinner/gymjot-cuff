@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package com.gymjot.cuff;
 
+import "nanopb.proto";
+
 option java_multiple_files = true;
 option java_package = "com.gymjot.cuff";
 option csharp_namespace = "Com.Gymjot.Cuff";
@@ -46,6 +48,7 @@ message DeviceCommand {
     OtaChunkCommand ota_chunk = 19;
     OtaCompleteCommand ota_complete = 20;
     ClearBondsCommand clear_bonds = 21;
+    TakePhotoCommand take_photo = 22;
   }
 }
 
@@ -82,6 +85,10 @@ message ClearBondsCommand {
 }
 
 message SnapshotRequestCommand {}
+
+message TakePhotoCommand {
+  bool high_resolution = 1;
+}
 
 message UpdateDeviceConfigCommand {
   bool set_target_fps = 1;
@@ -124,6 +131,8 @@ message DeviceEvent {
     SnapshotEvent snapshot = 18;
     OtaStatusEvent ota_status = 19;
     PowerEvent power_event = 20;
+    PhotoMetaEvent photo_meta = 21;
+    PhotoChunkEvent photo_chunk = 22;
   }
 }
 
@@ -207,6 +216,23 @@ message OtaStatusEvent {
   bool success = 5;
 }
 
+message PhotoMetaEvent {
+  uint32 session_id = 1;
+  uint32 total_bytes = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  string mime_type = 5 [(nanopb).max_length = 32];
+}
+
+message PhotoChunkEvent {
+  uint32 session_id = 1;
+  uint32 offset = 2;
+  bytes data = 3 [(nanopb).max_size = 200];
+  bool final_chunk = 4;
+}
 message PowerEvent {
   string state = 1;
 }
+
+
+

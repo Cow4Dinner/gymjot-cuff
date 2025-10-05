@@ -5,6 +5,7 @@
 
 #include "proto/cuff.pb.h"
 #include <array>
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -70,6 +71,41 @@ static bool g_clientConnected = false;
 static uint64_t g_lastConnectionTime = 0;
 static int8_t g_lastRssi = 0;
 static bool g_connectionOptimized = false;
+static uint64_t g_lastAprilTagDetectionMs = 0;
+static uint32_t g_lastAprilTagId = 0;
+static float g_lastAprilTagDistanceCm = 0.0f;
+static double g_lastAprilTagMargin = 0.0;
+
+static camera_config_t g_grayscaleCameraConfig = {};
+static camera_config_t g_photoCameraConfig = {};
+static bool g_cameraConfigInitialized = false;
+
+struct PendingPhotoRequest {
+    bool pending;
+    bool high_resolution;
+    uint32_t session_id;
+};
+
+static PendingPhotoRequest g_pendingPhotoRequest{false, false, 0};
+static bool g_photoCaptureInProgress = false;
+static uint32_t g_photoSessionCounter = 0;
+
+// Queue for deferred status notifications (avoid blocking GATT callbacks)
+struct DeferredStatus {
+    bool pending;
+    char label[32];
+    uint64_t timestamp;
+};
+static DeferredStatus g_deferredStatus{false, "", 0};
+static constexpr size_t kPhotoChunkPayloadBytes = 160;
+// Reduced from VGA to QVGA for high-res to prevent connection timeouts
+// VGA was causing 20-40KB transfers that took too long
+static constexpr framesize_t kPhotoFrameSizeHigh = FRAMESIZE_QVGA;  // 320x240 instead of 640x480
+static constexpr framesize_t kPhotoFrameSizeLow = FRAMESIZE_QQVGA;  // 160x120
+static constexpr int kPhotoQualityHigh = 15;  // Increased from 12 (lower number = higher quality/size)
+static constexpr int kPhotoQualityLow = 25;   // Increased from 20
+static constexpr const char* kPhotoMimeType = "image/jpeg";
+
 
 // Connection telemetry and instrumentation
 static uint64_t g_connectTimestamp = 0;
@@ -152,11 +188,590 @@ static std::string buildInfoString() {
 }
 static bool sendEvent(const com_gymjot_cuff_DeviceEvent& event);
 static void processCommand(const uint8_t* data, size_t len);
+static void sendStatusLabel(const char* label, uint64_t nowMs);
+static void sendPhotoMetaEvent(uint32_t sessionId, uint32_t totalBytes, uint32_t width, uint32_t height, const char* mimeType, uint64_t nowMs);
+static bool sendPhotoChunkEvent(uint32_t sessionId, uint32_t offset, const uint8_t* data, size_t length, bool finalChunk, uint64_t nowMs);
+static void handlePendingPhotoRequest(uint64_t nowMs);
+static bool captureAndSendPhoto(uint32_t sessionId, bool highResolution, uint64_t requestTimeMs);
+static bool switchToPhotoCamera(framesize_t frameSize, int quality);
+static bool restorePrimaryCamera();
+static uint32_t nextPhotoSessionId();
 
 static void logPacket(size_t len) {
     Serial.print("-> [");
     Serial.print(len);
     Serial.println(" bytes]");
+}
+
+static const char* protoModeLabel(com_gymjot_cuff_DeviceMode mode) {
+    switch (mode) {
+        case com_gymjot_cuff_DeviceMode_DEVICE_MODE_IDLE: return "Idle";
+        case com_gymjot_cuff_DeviceMode_DEVICE_MODE_AWAITING_EXERCISE: return "AwaitingExercise";
+        case com_gymjot_cuff_DeviceMode_DEVICE_MODE_SCANNING: return "Scanning";
+        case com_gymjot_cuff_DeviceMode_DEVICE_MODE_LOITER: return "Loiter";
+        default: return "Unknown";
+    }
+}
+
+static const char* boolLabel(bool value) {
+    return value ? "true" : "false";
+}
+
+template <size_t N>
+static void logCStringField(const char* label, const char (&buffer)[N]) {
+    size_t len = 0;
+    while (len < N && buffer[len] != '\0') {
+        ++len;
+    }
+    if (len == 0) {
+        return;
+    }
+    Serial.print(label);
+    for (size_t i = 0; i < len; ++i) {
+        char c = buffer[i];
+        if (c >= 32 && c <= 126) {
+            Serial.print(c);
+        } else {
+            Serial.print('?');
+        }
+    }
+    Serial.println();
+}
+
+
+static const char* deviceEventLabel(uint32_t which) {
+    switch (which) {
+        case com_gymjot_cuff_DeviceEvent_status_tag: return "status";
+        case com_gymjot_cuff_DeviceEvent_boot_tag: return "boot";
+        case com_gymjot_cuff_DeviceEvent_power_event_tag: return "power";
+        case com_gymjot_cuff_DeviceEvent_snapshot_tag: return "snapshot";
+        case com_gymjot_cuff_DeviceEvent_ota_status_tag: return "ota_status";
+        case com_gymjot_cuff_DeviceEvent_tag_tag: return "tag";
+        case com_gymjot_cuff_DeviceEvent_exercise_request_tag: return "exercise_request";
+        case com_gymjot_cuff_DeviceEvent_exercise_broadcast_tag: return "exercise_broadcast";
+        case com_gymjot_cuff_DeviceEvent_exercise_ready_tag: return "exercise_ready";
+        case com_gymjot_cuff_DeviceEvent_scan_tag: return "scan";
+        case com_gymjot_cuff_DeviceEvent_rep_tag: return "rep";
+        case com_gymjot_cuff_DeviceEvent_photo_meta_tag: return "photo_meta";
+        case com_gymjot_cuff_DeviceEvent_photo_chunk_tag: return "photo_chunk";
+        default: return "unknown";
+    }
+}
+
+static void logEventSummary(const com_gymjot_cuff_DeviceEvent& event) {
+    Serial.print("[BLE] notify event=");
+    Serial.println(deviceEventLabel(event.which_event));
+
+    switch (event.which_event) {
+        case com_gymjot_cuff_DeviceEvent_status_tag: {
+            logCStringField("[BLE]   label=", event.event.status.status_label);
+            Serial.print("[BLE]   mode=");
+            Serial.println(protoModeLabel(event.event.status.mode));
+            Serial.print("[BLE]   fps=");
+            Serial.println(event.event.status.fps, 2);
+            Serial.print("[BLE]   test_mode=");
+            Serial.println(boolLabel(event.event.status.test_mode));
+            break;
+        }
+        case com_gymjot_cuff_DeviceEvent_boot_tag: {
+            Serial.print("[BLE]   test_mode=");
+            Serial.println(boolLabel(event.event.boot.test_mode));
+            Serial.print("[BLE]   mode=");
+            Serial.println(protoModeLabel(event.event.boot.mode));
+            Serial.print("[BLE]   fps=");
+            Serial.println(event.event.boot.fps, 2);
+            break;
+        }
+        case com_gymjot_cuff_DeviceEvent_tag_tag: {
+            Serial.print("[BLE]   tag_id=");
+            Serial.println(event.event.tag.tag_id);
+            Serial.print("[BLE]   from_test_mode=");
+            Serial.println(boolLabel(event.event.tag.from_test_mode));
+            break;
+        }
+        case com_gymjot_cuff_DeviceEvent_exercise_request_tag: {
+            Serial.print("[BLE]   tag_id=");
+            Serial.println(event.event.exercise_request.tag_id);
+            break;
+        }
+        case com_gymjot_cuff_DeviceEvent_exercise_broadcast_tag: {
+            Serial.print("[BLE]   exercise_id=");
+            Serial.println(event.event.exercise_broadcast.exercise_id);
+            Serial.print("[BLE]   from_test_mode=");
+            Serial.println(boolLabel(event.event.exercise_broadcast.from_test_mode));
+            logCStringField("[BLE]   name=", event.event.exercise_broadcast.name);
+            break;
+        }
+        case com_gymjot_cuff_DeviceEvent_exercise_ready_tag: {
+            Serial.print("[BLE]   exercise_id=");
+            Serial.println(event.event.exercise_ready.exercise_id);
+            break;
+        }
+        case com_gymjot_cuff_DeviceEvent_scan_tag: {
+#ifdef ARDUINO
+            static uint32_t lastScanLogMs = 0;
+            uint32_t nowMs = millis();
+            if (nowMs - lastScanLogMs < 500) {
+                break;
+            }
+            lastScanLogMs = nowMs;
+#endif
+            Serial.print("[BLE]   tag_id=");
+            Serial.println(event.event.scan.tag_id);
+            Serial.print("[BLE]   distance_cm=");
+            Serial.println(event.event.scan.distance_cm, 2);
+            Serial.print("[BLE]   fps=");
+            Serial.println(event.event.scan.fps, 2);
+            Serial.print("[BLE]   mode=");
+            Serial.println(protoModeLabel(event.event.scan.mode));
+            break;
+        }
+        case com_gymjot_cuff_DeviceEvent_rep_tag: {
+            Serial.print("[BLE]   tag_id=");
+            Serial.println(event.event.rep.tag_id);
+            Serial.print("[BLE]   rep_count=");
+            Serial.println(event.event.rep.rep_count);
+            break;
+        }
+        case com_gymjot_cuff_DeviceEvent_photo_meta_tag: {
+            Serial.print("[BLE]   session_id=");
+            Serial.println(event.event.photo_meta.session_id);
+            Serial.print("[BLE]   total_bytes=");
+            Serial.println(event.event.photo_meta.total_bytes);
+            Serial.print("[BLE]   dimensions=");
+            Serial.print(event.event.photo_meta.width);
+            Serial.print("x");
+            Serial.println(event.event.photo_meta.height);
+            logCStringField("[BLE]   mime=", event.event.photo_meta.mime_type);
+            break;
+        }
+        case com_gymjot_cuff_DeviceEvent_photo_chunk_tag: {
+#ifdef ARDUINO
+            static uint32_t lastChunkLogSession = 0;
+            static uint32_t lastChunkLoggedOffset = 0;
+#endif
+            uint32_t sessionId = event.event.photo_chunk.session_id;
+            uint32_t offset = event.event.photo_chunk.offset;
+            uint32_t chunkSize = event.event.photo_chunk.data.size;
+            bool finalChunk = event.event.photo_chunk.final_chunk;
+#ifdef ARDUINO
+            bool shouldLog = (offset == 0) || finalChunk;
+            if (!shouldLog) {
+                if (sessionId != lastChunkLogSession || offset >= lastChunkLoggedOffset + (kPhotoChunkPayloadBytes * 10)) {
+                    shouldLog = true;
+                }
+            }
+            if (shouldLog) {
+                lastChunkLogSession = sessionId;
+                lastChunkLoggedOffset = offset;
+#endif
+                Serial.print("[BLE]   session_id=");
+                Serial.println(sessionId);
+                Serial.print("[BLE]   chunk_offset=");
+                Serial.println(offset);
+                Serial.print("[BLE]   chunk_size=");
+                Serial.println(chunkSize);
+                Serial.print("[BLE]   final_chunk=");
+                Serial.println(boolLabel(finalChunk));
+#ifdef ARDUINO
+            }
+#endif
+            break;
+        }
+        case com_gymjot_cuff_DeviceEvent_snapshot_tag: {
+#ifdef ARDUINO
+            static uint32_t lastSnapshotLogMs = 0;
+            uint32_t nowMs = millis();
+            if (nowMs - lastSnapshotLogMs < 5000) {
+                break;
+            }
+            lastSnapshotLogMs = nowMs;
+#endif
+            char buffer[32];
+            std::snprintf(buffer, sizeof(buffer), "%llu", static_cast<unsigned long long>(event.event.snapshot.device_id));
+            Serial.print("[BLE]   device_id=");
+            Serial.println(buffer);
+            Serial.print("[BLE]   camera_ready=");
+            Serial.println(boolLabel(event.event.snapshot.camera_ready));
+            Serial.print("[BLE]   test_mode=");
+            Serial.println(boolLabel(event.event.snapshot.test_mode));
+            Serial.print("[BLE]   mode=");
+            Serial.println(protoModeLabel(event.event.snapshot.mode));
+            Serial.print("[BLE]   target_fps=");
+            Serial.println(event.event.snapshot.target_fps, 2);
+            Serial.print("[BLE]   active_tag_id=");
+            Serial.println(event.event.snapshot.active_tag_id);
+            break;
+        }
+        case com_gymjot_cuff_DeviceEvent_power_event_tag: {
+            logCStringField("[BLE]   state=", event.event.power_event.state);
+            break;
+        }
+        case com_gymjot_cuff_DeviceEvent_ota_status_tag: {
+            Serial.print("[BLE]   phase=");
+            Serial.println(static_cast<int>(event.event.ota_status.phase));
+            Serial.print("[BLE]   success=");
+            Serial.println(boolLabel(event.event.ota_status.success));
+            Serial.print("[BLE]   bytes=");
+            Serial.print(event.event.ota_status.bytes_transferred);
+            Serial.print('/');
+            Serial.println(event.event.ota_status.total_bytes);
+            logCStringField("[BLE]   message=", event.event.ota_status.message);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+
+static uint32_t nextPhotoSessionId() {
+    g_photoSessionCounter++;
+    if (g_photoSessionCounter == 0) {
+        g_photoSessionCounter = 1;
+    }
+    return g_photoSessionCounter;
+}
+
+static void sendStatusLabel(const char* label, uint64_t nowMs) {
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_status_tag;
+    std::memset(evt.event.status.status_label, 0, sizeof(evt.event.status.status_label));
+    std::strncpy(evt.event.status.status_label, label, sizeof(evt.event.status.status_label) - 1);
+    evt.event.status.mode = g_controller ? toProtoMode(g_controller->mode()) : com_gymjot_cuff_DeviceMode_DEVICE_MODE_IDLE;
+    evt.event.status.fps = g_controller ? g_controller->targetFps() : DEFAULT_FPS;
+    evt.event.status.test_mode = g_controller && g_controller->testMode();
+    sendEvent(evt);
+}
+
+// Deferred version - queues status for sending in main loop (doesn't block GATT callback)
+static void queueStatusLabel(const char* label, uint64_t nowMs) {
+    std::memset(g_deferredStatus.label, 0, sizeof(g_deferredStatus.label));
+    std::strncpy(g_deferredStatus.label, label, sizeof(g_deferredStatus.label) - 1);
+    g_deferredStatus.timestamp = nowMs;
+    g_deferredStatus.pending = true;
+}
+
+static void sendPhotoMetaEvent(uint32_t sessionId, uint32_t totalBytes, uint32_t width, uint32_t height, const char* mimeType, uint64_t nowMs) {
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_photo_meta_tag;
+    evt.event.photo_meta.session_id = sessionId;
+    evt.event.photo_meta.total_bytes = totalBytes;
+    evt.event.photo_meta.width = width;
+    evt.event.photo_meta.height = height;
+    std::snprintf(evt.event.photo_meta.mime_type, sizeof(evt.event.photo_meta.mime_type), "%s", mimeType);
+    sendEvent(evt);
+}
+
+static bool sendPhotoChunkEvent(uint32_t sessionId, uint32_t offset, const uint8_t* data, size_t length, bool finalChunk, uint64_t nowMs) {
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_photo_chunk_tag;
+    evt.event.photo_chunk.session_id = sessionId;
+    evt.event.photo_chunk.offset = offset;
+    size_t cappedLength = length;
+    if (cappedLength > sizeof(evt.event.photo_chunk.data.bytes)) {
+        cappedLength = sizeof(evt.event.photo_chunk.data.bytes);
+    }
+    evt.event.photo_chunk.data.size = static_cast<pb_size_t>(cappedLength);
+    std::memcpy(evt.event.photo_chunk.data.bytes, data, cappedLength);
+    evt.event.photo_chunk.final_chunk = finalChunk;
+    return sendEvent(evt);
+}
+
+static bool switchToPhotoCamera(framesize_t frameSize, int quality) {
+    camera_config_t config = g_photoCameraConfig;
+    config.frame_size = frameSize;
+    esp_err_t err = esp_camera_init(&config);
+    if (err != ESP_OK) {
+        Serial.print("[PHOTO] esp_camera_init(photo) failed: ");
+        Serial.println(err);
+        return false;
+    }
+    sensor_t* sensor = esp_camera_sensor_get();
+    if (sensor) {
+        sensor->set_framesize(sensor, frameSize);
+        sensor->set_pixformat(sensor, PIXFORMAT_JPEG);
+        sensor->set_quality(sensor, quality);
+    }
+    return true;
+}
+
+static bool restorePrimaryCamera() {
+    esp_err_t err = esp_camera_init(&g_grayscaleCameraConfig);
+    if (err != ESP_OK) {
+        Serial.print("[PHOTO] Failed to restore camera: ");
+        Serial.println(err);
+        g_cameraReady = false;
+        return false;
+    }
+    sensor_t* sensor = esp_camera_sensor_get();
+    if (sensor) {
+        sensor->set_framesize(sensor, g_grayscaleCameraConfig.frame_size);
+        sensor->set_pixformat(sensor, PIXFORMAT_GRAYSCALE);
+    }
+    g_cameraReady = true;
+    return true;
+}
+
+static bool captureAndSendPhoto(uint32_t sessionId, bool highResolution, uint64_t requestTimeMs) {
+    if (!g_cameraConfigInitialized) {
+        Serial.println("[PHOTO] Camera configuration not initialized");
+        g_cameraReady = false;
+        return false;
+    }
+
+    uint64_t startMs = millis();
+    Serial.println("[PHOTO] ========================================");
+    Serial.print("[PHOTO] Capturing photo (session=");
+    Serial.print(sessionId);
+    Serial.print(", high_res=");
+    Serial.print(boolLabel(highResolution));
+    Serial.println(")");
+    Serial.print("[PHOTO] Free heap before: ");
+    Serial.print(ESP.getFreeHeap());
+    Serial.println(" bytes");
+    Serial.print("[PHOTO] Free PSRAM before: ");
+    Serial.print(ESP.getFreePsram());
+    Serial.println(" bytes");
+
+    g_cameraReady = false;
+
+    // Reset watchdog before potentially long operation
+    esp_task_wdt_reset();
+
+    esp_err_t err = esp_camera_deinit();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        Serial.print("[PHOTO] esp_camera_deinit returned ");
+        Serial.println(err);
+    }
+
+    // Small delay to allow camera hardware to fully release
+    delay(50);
+
+    framesize_t frameSize = highResolution ? kPhotoFrameSizeHigh : kPhotoFrameSizeLow;
+    int quality = highResolution ? kPhotoQualityHigh : kPhotoQualityLow;
+
+    Serial.print("[PHOTO] Requested size: ");
+    Serial.print(frameSize == FRAMESIZE_QVGA ? "QVGA (320x240)" : "QQVGA (160x120)");
+    Serial.print(", quality: ");
+    Serial.println(quality);
+
+    if (!switchToPhotoCamera(frameSize, quality)) {
+        Serial.println("[PHOTO] !!! Failed to switch to photo camera !!!");
+        restorePrimaryCamera();
+        return false;
+    }
+
+    Serial.print("[PHOTO] Free heap after camera init: ");
+    Serial.print(ESP.getFreeHeap());
+    Serial.println(" bytes");
+
+    uint64_t captureStartMs = millis();
+    camera_fb_t* fb = esp_camera_fb_get();
+    if (!fb) {
+        Serial.println("[PHOTO] !!! Failed to capture frame buffer !!!");
+        Serial.print("[PHOTO] Free heap on failure: ");
+        Serial.print(ESP.getFreeHeap());
+        Serial.println(" bytes");
+        esp_camera_deinit();
+        restorePrimaryCamera();
+        return false;
+    }
+
+    uint64_t captureEndMs = millis();
+    Serial.print("[PHOTO] Captured ");
+    Serial.print(fb->len);
+    Serial.print(" bytes (");
+    Serial.print(fb->width);
+    Serial.print("x");
+    Serial.print(fb->height);
+    Serial.print(") in ");
+    Serial.print(captureEndMs - captureStartMs);
+    Serial.println("ms");
+    Serial.print("[PHOTO] Free heap after capture: ");
+    Serial.print(ESP.getFreeHeap());
+    Serial.println(" bytes");
+    Serial.print("[PHOTO] Current BLE MTU: ");
+    Serial.print(g_currentMtu);
+    Serial.println(" bytes");
+
+    Serial.println("[PHOTO] Sending PhotoMetaEvent...");
+    sendPhotoMetaEvent(sessionId, fb->len, fb->width, fb->height, kPhotoMimeType, millis());
+    Serial.println("[PHOTO] PhotoMetaEvent sent");
+
+    // Reset watchdog before potentially long transfer
+    esp_task_wdt_reset();
+
+    const size_t attPayload = (g_currentMtu > 3) ? static_cast<size_t>(g_currentMtu - 3) : static_cast<size_t>(20);
+    constexpr size_t kPhotoChunkProtoOverhead = 32;
+    if (attPayload <= kPhotoChunkProtoOverhead) {
+        Serial.print("[PHOTO] MTU too small for photo transfer: ");
+        Serial.println(g_currentMtu);
+        sendStatusLabel("photo-error-mtu", millis());
+        esp_camera_fb_return(fb);
+        esp_camera_deinit();
+        restorePrimaryCamera();
+        return false;
+    }
+
+    size_t chunkLimit = kPhotoChunkPayloadBytes;
+    size_t mtuLimitedChunk = attPayload - kPhotoChunkProtoOverhead;
+    if (mtuLimitedChunk < chunkLimit) {
+        chunkLimit = mtuLimitedChunk;
+    }
+
+    Serial.print("[PHOTO] Using chunk size: ");
+    Serial.print(chunkLimit);
+    Serial.println(" bytes");
+
+    size_t offset = 0;
+    size_t chunkCount = 0;
+    uint64_t transferStartMs = millis();
+    uint64_t lastProgressMs = transferStartMs;
+
+    while (offset < fb->len) {
+        size_t remaining = fb->len - offset;
+        size_t chunk = remaining < chunkLimit ? remaining : chunkLimit;
+
+        bool sent = sendPhotoChunkEvent(sessionId, static_cast<uint32_t>(offset), fb->buf + offset, chunk, (offset + chunk) >= fb->len, millis());
+        if (!sent && g_clientConnected) {
+            Serial.println("[PHOTO] !!! Chunk send failed but client still connected !!!");
+        } else if (!sent) {
+            Serial.println("[PHOTO] !!! Chunk send failed - client disconnected !!!");
+            esp_camera_fb_return(fb);
+            esp_camera_deinit();
+            restorePrimaryCamera();
+            return false;
+        }
+
+        offset += chunk;
+        chunkCount++;
+
+        if (millis() - lastProgressMs > 1000) {
+            Serial.print("[PHOTO] Progress: ");
+            Serial.print((offset * 100) / fb->len);
+            Serial.print("% (");
+            Serial.print(offset);
+            Serial.print("/");
+            Serial.print(fb->len);
+            Serial.println(" bytes)");
+            lastProgressMs = millis();
+        }
+
+        delay(35);
+        yield();
+
+        if (chunkCount % 10 == 0) {
+            esp_task_wdt_reset();
+        }
+    }
+
+    uint64_t transferEndMs = millis();
+    Serial.print("[PHOTO] Sent ");
+    Serial.print(chunkCount);
+    Serial.print(" chunks in ");
+    Serial.print(transferEndMs - transferStartMs);
+    Serial.print("ms (avg ");
+    Serial.print((transferEndMs - transferStartMs) / chunkCount);
+    Serial.println("ms/chunk)");
+
+    esp_camera_fb_return(fb);
+
+    Serial.print("[PHOTO] Free heap after fb_return: ");
+    Serial.print(ESP.getFreeHeap());
+    Serial.println(" bytes");
+
+    err = esp_camera_deinit();
+    if (err != ESP_OK) {
+        Serial.print("[PHOTO] esp_camera_deinit(photo) returned ");
+        Serial.println(err);
+    }
+
+    // Small delay before reinitializing primary camera
+    delay(50);
+
+    bool restored = restorePrimaryCamera();
+    if (!restored) {
+        Serial.println("[PHOTO] !!! Failed to restore primary camera !!!");
+    }
+
+    uint64_t endMs = millis();
+    Serial.print("[PHOTO] Total operation time: ");
+    Serial.print(endMs - startMs);
+    Serial.println("ms");
+    Serial.print("[PHOTO] Free heap after restore: ");
+    Serial.print(ESP.getFreeHeap());
+    Serial.println(" bytes");
+    Serial.print("[PHOTO] Client still connected: ");
+    Serial.println(g_clientConnected ? "YES" : "NO");
+    Serial.println("[PHOTO] ========================================");
+
+    // Reset watchdog after completing photo operation
+    esp_task_wdt_reset();
+
+    return restored;
+}
+
+static void handlePendingPhotoRequest(uint64_t nowMs) {
+    if (!g_pendingPhotoRequest.pending || g_photoCaptureInProgress) {
+        return;
+    }
+
+    if (!g_cameraReady) {
+        Serial.println("[PHOTO] Camera not ready for capture");
+        sendStatusLabel("photo-error-camera", nowMs);
+        g_pendingPhotoRequest.pending = false;
+        return;
+    }
+
+    if (g_otaInProgress) {
+        Serial.println("[PHOTO] Photo capture blocked during OTA");
+        sendStatusLabel("photo-error-ota", nowMs);
+        g_pendingPhotoRequest.pending = false;
+        return;
+    }
+
+    const size_t attPayload = (g_currentMtu > 3) ? static_cast<size_t>(g_currentMtu - 3) : static_cast<size_t>(20);
+    if (attPayload <= 32) {
+        Serial.print("[PHOTO] MTU too small (");
+        Serial.print(g_currentMtu);
+        Serial.println(" bytes)");
+        sendStatusLabel("photo-error-mtu", nowMs);
+        g_pendingPhotoRequest.pending = false;
+        return;
+    }
+
+    Serial.println("[PHOTO] === STARTING PHOTO CAPTURE ===");
+    Serial.println("[PHOTO] AprilTag detection PAUSED during photo capture");
+    Serial.print("[PHOTO] Session ID: ");
+    Serial.println(g_pendingPhotoRequest.session_id);
+    Serial.print("[PHOTO] High resolution: ");
+    Serial.println(g_pendingPhotoRequest.high_resolution ? "true" : "false");
+
+    g_photoCaptureInProgress = true;
+    bool highRes = g_pendingPhotoRequest.high_resolution;
+    uint32_t sessionId = g_pendingPhotoRequest.session_id;
+    g_pendingPhotoRequest.pending = false;
+
+    Serial.println("[PHOTO] Sending photo-start status...");
+    sendStatusLabel("photo-start", nowMs);
+    Serial.println("[PHOTO] Calling captureAndSendPhoto...");
+    bool success = captureAndSendPhoto(sessionId, highRes, nowMs);
+    uint64_t finishMs = millis();
+
+    Serial.println("[PHOTO] === PHOTO CAPTURE COMPLETE ===");
+    Serial.print("[PHOTO] Success: ");
+    Serial.println(success ? "true" : "false");
+    Serial.println("[PHOTO] AprilTag detection RESUMED");
+
+    Serial.print("[PHOTO] Sending ");
+    Serial.print(success ? "photo-complete" : "photo-error");
+    Serial.println(" status...");
+    sendStatusLabel(success ? "photo-complete" : "photo-error", finishMs);
+    g_photoCaptureInProgress = false;
 }
 
 class RxCallback : public NimBLECharacteristicCallbacks {
@@ -315,7 +930,7 @@ class ServerCallback : public NimBLEServerCallbacks {
             Serial.println("All bonds cleared - ready for fresh pairing");
         }
 
-        // Restart advertising IMMEDIATELY (within ≤500ms)
+        // Restart advertising IMMEDIATELY (within <=500ms)
         // NO delays, NO heavy work (event sending moved to loop)
         Serial.print("[INSTR] Restarting advertising at +");
         Serial.print(millis() - disconnectTime);
@@ -480,11 +1095,26 @@ class OtaCallback : public NimBLECharacteristicCallbacks {
 };
 static bool sendEvent(const com_gymjot_cuff_DeviceEvent& event) {
     if (!g_tx) {
+        static bool warnedMissingTx = false;
+        if (!warnedMissingTx) {
+            Serial.println("[BLE] TX characteristic not ready");
+            warnedMissingTx = true;
+        }
         return false;
     }
 
     // Don't try to send if no client is connected
     if (!g_clientConnected) {
+    #ifdef ARDUINO
+        static uint32_t lastSkipLogMs = 0;
+        uint32_t nowMs = millis();
+        if (nowMs - lastSkipLogMs > 1000) {
+            Serial.println("[BLE] skip notify (no client connected)");
+            lastSkipLogMs = nowMs;
+        }
+    #else
+        Serial.println("[BLE] skip notify (no client connected)");
+    #endif
         return false;
     }
 
@@ -501,6 +1131,7 @@ static bool sendEvent(const com_gymjot_cuff_DeviceEvent& event) {
     }
 
     logPacket(totalLen);
+    logEventSummary(event);
     return true;
 }
 
@@ -520,7 +1151,7 @@ static void setupController() {
 }
 
 static bool setupCamera() {
-    camera_config_t config;
+    camera_config_t config = {};
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
     config.pin_d0 = Y2_GPIO_NUM;
@@ -547,16 +1178,26 @@ static bool setupCamera() {
     config.fb_location = CAMERA_FB_IN_PSRAM;
     config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
 
-    if (esp_camera_init(&config) != ESP_OK) {
+    g_grayscaleCameraConfig = config;
+    g_photoCameraConfig = config;
+    g_photoCameraConfig.pixel_format = PIXFORMAT_JPEG;
+    g_photoCameraConfig.frame_size = kPhotoFrameSizeHigh;
+    g_photoCameraConfig.fb_count = 1;
+    g_photoCameraConfig.jpeg_quality = kPhotoQualityHigh;
+
+    if (esp_camera_init(&g_grayscaleCameraConfig) != ESP_OK) {
         Serial.println("Camera init failed");
+        g_cameraConfigInitialized = false;
         return false;
     }
 
     sensor_t* sensor = esp_camera_sensor_get();
     if (sensor) {
-        sensor->set_framesize(sensor, FRAMESIZE_QQVGA);
+        sensor->set_framesize(sensor, g_grayscaleCameraConfig.frame_size);
+        sensor->set_pixformat(sensor, PIXFORMAT_GRAYSCALE);
     }
 
+    g_cameraConfigInitialized = true;
     Serial.println("Camera ready");
     return true;
 }
@@ -751,12 +1392,27 @@ static float computeDetectionDistance(const apriltag_detection_t* det) {
 
 static bool captureAprilTag(AprilTagDetection& detection) {
     if (!g_cameraReady || !g_tagDetector) {
+        static uint64_t lastWarn = 0;
+        uint64_t now = millis();
+        if (now - lastWarn > 5000) {
+            Serial.println("[APRILTAG] Detector not ready");
+            Serial.print("[APRILTAG] camera_ready=");
+            Serial.println(g_cameraReady ? "true" : "false");
+            Serial.print("[APRILTAG] detector_ready=");
+            Serial.println(g_tagDetector != nullptr ? "true" : "false");
+            lastWarn = now;
+        }
         return false;
     }
 
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
-        Serial.println("Failed to get frame");
+        static uint64_t lastFbError = 0;
+        uint64_t now = millis();
+        if (now - lastFbError > 5000) {
+            Serial.println("[APRILTAG] Failed to grab camera frame");
+            lastFbError = now;
+        }
         return false;
     }
 
@@ -765,14 +1421,19 @@ static bool captureAprilTag(AprilTagDetection& detection) {
 
     apriltag_detection_t* best = nullptr;
     double bestMargin = 0.0;
+    const char* wrongFamilyName = nullptr;
+    int wrongFamilyCount = 0;
+    int totalDetections = zarray_size(detections);
 
-    for (int i = 0; i < zarray_size(detections); ++i) {
+    for (int i = 0; i < totalDetections; ++i) {
         apriltag_detection_t* det = nullptr;
         zarray_get(detections, i, &det);
         if (!det) {
             continue;
         }
         if (det->family != g_tagFamily) {
+            wrongFamilyName = det->family ? det->family->name : nullptr;
+            ++wrongFamilyCount;
             continue;
         }
         if (!best || det->decision_margin > bestMargin) {
@@ -782,16 +1443,55 @@ static bool captureAprilTag(AprilTagDetection& detection) {
     }
 
     bool found = false;
+    uint64_t nowMs = millis();
+    static uint64_t lastDetectionLogMs = 0;
+    static uint32_t lastLoggedTag = 0;
+    static uint64_t lastNoDetectionLogMs = 0;
+
     if (best) {
         detection.tagId = static_cast<uint32_t>(best->id);
         detection.distanceCm = computeDetectionDistance(best);
         found = true;
+
+        g_lastAprilTagDetectionMs = nowMs;
+        g_lastAprilTagId = detection.tagId;
+        g_lastAprilTagDistanceCm = detection.distanceCm;
+        g_lastAprilTagMargin = bestMargin;
+
+        if (detection.tagId != lastLoggedTag || nowMs - lastDetectionLogMs > 2000) {
+            Serial.println("[APRILTAG] Detection");
+            Serial.print("[APRILTAG] tag_id=");
+            Serial.println(detection.tagId);
+            Serial.print("[APRILTAG] distance_cm=");
+            Serial.println(detection.distanceCm);
+            Serial.print("[APRILTAG] decision_margin=");
+            Serial.println(bestMargin);
+            lastDetectionLogMs = nowMs;
+            lastLoggedTag = detection.tagId;
+        }
+    } else if (wrongFamilyCount > 0) {
+        if (nowMs - lastNoDetectionLogMs > 5000) {
+            Serial.print("[APRILTAG] Detected ");
+            Serial.print(wrongFamilyCount);
+            Serial.println(" tag(s) from a different family");
+            if (wrongFamilyName) {
+                Serial.print("[APRILTAG] last_family=");
+                Serial.println(wrongFamilyName);
+            }
+            lastNoDetectionLogMs = nowMs;
+        }
+    } else {
+        if (nowMs - lastNoDetectionLogMs > 5000) {
+            Serial.println("[APRILTAG] No tags detected");
+            lastNoDetectionLogMs = nowMs;
+        }
     }
 
     apriltag_detections_destroy(detections);
     esp_camera_fb_return(fb);
     return found;
 }
+
 
 static void sendBootStatus(uint64_t nowMs) {
     com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
@@ -873,6 +1573,31 @@ void processCommand(const uint8_t* data, size_t len) {
                 sendPowerEvent("factory-reset-cancel", now);
             }
             break;
+        case com_gymjot_cuff_DeviceCommand_take_photo_tag: {
+            // IMPORTANT: Don't block GATT callback - just queue the request
+            // All notifications will be sent from main loop
+            if (g_photoCaptureInProgress || g_pendingPhotoRequest.pending) {
+                Serial.println("[PHOTO] Capture already in progress");
+                queueStatusLabel("photo-busy", now);
+                break;
+            }
+            if (!g_cameraReady) {
+                Serial.println("[PHOTO] Capture requested but camera not ready");
+                queueStatusLabel("photo-error-camera", now);
+                break;
+            }
+            if (g_otaInProgress) {
+                Serial.println("[PHOTO] Capture blocked during OTA");
+                queueStatusLabel("photo-error-ota", now);
+                break;
+            }
+            Serial.println("[CMD] Photo request queued - returning immediately from GATT callback");
+            g_pendingPhotoRequest.pending = true;
+            g_pendingPhotoRequest.high_resolution = cmd.command.take_photo.high_resolution;
+            g_pendingPhotoRequest.session_id = nextPhotoSessionId();
+            queueStatusLabel("photo-queued", now);
+            break;
+        }
         case com_gymjot_cuff_DeviceCommand_snapshot_request_tag:
             updateSnapshotCharacteristic(now);
             sendSnapshotEvent(now);
@@ -954,6 +1679,31 @@ void setup() {
     Serial.println(kFirmwareVersion);
     Serial.println();
 
+    // Print crash/reset reason
+    esp_reset_reason_t resetReason = esp_reset_reason();
+    Serial.print("Reset reason: ");
+    switch(resetReason) {
+        case ESP_RST_POWERON: Serial.println("Power-on reset"); break;
+        case ESP_RST_SW: Serial.println("Software reset via esp_restart"); break;
+        case ESP_RST_PANIC: Serial.println("!!! PANIC/EXCEPTION !!!"); break;
+        case ESP_RST_INT_WDT: Serial.println("!!! INTERRUPT WATCHDOG !!!"); break;
+        case ESP_RST_TASK_WDT: Serial.println("!!! TASK WATCHDOG !!!"); break;
+        case ESP_RST_WDT: Serial.println("!!! OTHER WATCHDOG !!!"); break;
+        case ESP_RST_DEEPSLEEP: Serial.println("Deep sleep wake"); break;
+        case ESP_RST_BROWNOUT: Serial.println("!!! BROWNOUT !!!"); break;
+        case ESP_RST_SDIO: Serial.println("SDIO reset"); break;
+        default: Serial.println("Unknown"); break;
+    }
+
+    // Print free memory
+    Serial.print("Free heap: ");
+    Serial.print(ESP.getFreeHeap());
+    Serial.println(" bytes");
+    Serial.print("Free PSRAM: ");
+    Serial.print(ESP.getFreePsram());
+    Serial.println(" bytes");
+    Serial.println();
+
     // Initialize watchdog timer (30 second timeout)
     Serial.println("Initializing watchdog timer (30s timeout)...");
     esp_task_wdt_init(30, true);
@@ -987,9 +1737,38 @@ void setup() {
     updateSnapshotCharacteristic(now);
 
     Serial.println();
-    Serial.println("========================================");
-    Serial.println("    Boot Complete - System Ready");
-    Serial.println("========================================");
+    Serial.println("[BOOT] --------------------------------");
+    Serial.println("[BOOT] System ready");
+    Serial.println("[BOOT] Startup diagnostics");
+    Serial.print("[BOOT] camera_ready=");
+    Serial.println(g_cameraReady ? "true" : "false");
+    Serial.print("[BOOT] detector_ready=");
+    Serial.println(g_tagDetector ? "true" : "false");
+    Serial.print("[BOOT] ble_advertising=");
+    Serial.println("active");
+    Serial.print("[BOOT] test_mode=");
+    Serial.println(g_controller && g_controller->testMode() ? "enabled" : "disabled");
+    Serial.println();
+    Serial.println("[BOOT] AprilTag configuration");
+    Serial.println("  family=tagCircle49h12");
+    Serial.println("  tag_size_cm=5.5");
+    Serial.println("  expected_ids=0-2400");
+    Serial.println();
+    Serial.println("[BOOT] Tips");
+    if (!g_controller || !g_controller->testMode()) {
+        Serial.println("  - Camera mode active");
+        Serial.println("  - Use tagCircle49h12 family");
+        Serial.println("  - Keep tag 30-100cm from camera");
+        Serial.println("  - Provide even lighting");
+        Serial.println("  - Watch for '[APRILTAG] Detection' logs");
+    } else {
+        Serial.println("  - Test mode active");
+        Serial.println("  - No camera or tag required");
+        Serial.println("  - Simulator will generate detections and reps");
+    }
+    Serial.println();
+    Serial.println("[BOOT] Waiting for detections...");
+    Serial.println("[BOOT] --------------------------------");
     Serial.println();
 
     esp_task_wdt_reset();
@@ -997,6 +1776,58 @@ void setup() {
 
 void loop() {
     uint64_t now = millis();
+
+    // Process any deferred status notifications (from GATT callbacks)
+    if (g_deferredStatus.pending) {
+        Serial.print("[LOOP] Sending deferred status: ");
+        Serial.println(g_deferredStatus.label);
+        sendStatusLabel(g_deferredStatus.label, g_deferredStatus.timestamp);
+        g_deferredStatus.pending = false;
+    }
+
+    // Heartbeat and status every 10 seconds
+    static uint64_t lastHeartbeat = 0;
+    if (now - lastHeartbeat > 10000) {
+        Serial.println("[STATUS] --------------------------------");
+        Serial.print("[STATUS] Uptime_s=");
+        Serial.println(now / 1000);
+        Serial.print("[STATUS] camera_ready=");
+        Serial.println(g_cameraReady ? "true" : "false");
+        Serial.print("[STATUS] detector_ready=");
+        Serial.println(g_tagDetector ? "true" : "false");
+        Serial.print("[STATUS] test_mode=");
+        Serial.println(g_controller && g_controller->testMode() ? "true" : "false");
+        Serial.print("[STATUS] ble_client_connected=");
+        Serial.println(g_clientConnected ? "true" : "false");
+        if (g_controller) {
+            Serial.print("[STATUS] mode=");
+            switch (g_controller->mode()) {
+                case gymjot::DeviceMode::Idle: Serial.println("Idle"); break;
+                case gymjot::DeviceMode::AwaitingExercise: Serial.println("AwaitingExercise"); break;
+                case gymjot::DeviceMode::Scanning: Serial.println("Scanning"); break;
+                case gymjot::DeviceMode::Loiter: Serial.println("Loiter"); break;
+            }
+            Serial.print("[STATUS] target_fps=");
+            Serial.println(g_controller->targetFps());
+            Serial.print("[STATUS] rep_count=");
+            Serial.println(g_controller->repTracker().count());
+        }
+        if (g_lastAprilTagDetectionMs > 0) {
+            Serial.print("[STATUS] last_tag_age_ms=");
+            Serial.println(now - g_lastAprilTagDetectionMs);
+            Serial.print("[STATUS] last_tag_id=");
+            Serial.println(g_lastAprilTagId);
+            Serial.print("[STATUS] last_tag_distance_cm=");
+            Serial.println(g_lastAprilTagDistanceCm);
+            Serial.print("[STATUS] last_tag_margin=");
+            Serial.println(g_lastAprilTagMargin);
+        } else {
+            Serial.println("[STATUS] last_tag_age_ms=never");
+        }
+        Serial.println("[STATUS] --------------------------------");
+        lastHeartbeat = now;
+    }
+
 
     // Reset watchdog timer
     static uint64_t lastWdtReset = 0;
@@ -1022,7 +1853,7 @@ void loop() {
                     // Safe connection parameters per BLE best practices:
                     // conn_interval = 30-50ms, slave_latency = 0-4, supervision_timeout = 5-6s
                     // Rule: timeout_ms >= 2 * interval_ms * (1 + latency) * 3
-                    // Example: 5000 >= 2 * 40 * (1 + 2) * 3 = 720 ✓
+                    // Example: 5000 >= 2 * 40 * (1 + 2) * 3 = 720 (ok)
                     g_server->updateConnParams(connInfo.getConnHandle(),
                         24,   // min_interval (24 * 1.25ms = 30ms)
                         40,   // max_interval (40 * 1.25ms = 50ms)
@@ -1069,24 +1900,42 @@ void loop() {
         g_controller->maintainTestMode(now);
     }
 
-    static uint64_t lastFrameMs = 0;
-    float interval = g_controller ? g_controller->frameIntervalMs() : 125.0f;
-    bool frameReady = (now - lastFrameMs) >= static_cast<uint64_t>(interval);
+    // Skip AprilTag detection during photo capture to avoid camera resource conflicts
+    if (!g_photoCaptureInProgress) {
+        static uint64_t lastFrameMs = 0;
+        static uint64_t frameCount = 0;
+        float interval = g_controller ? g_controller->frameIntervalMs() : 125.0f;
+        bool frameReady = (now - lastFrameMs) >= static_cast<uint64_t>(interval);
 
-    if (frameReady) {
-        lastFrameMs = now;
-        AprilTagDetection detection;
-        bool hasDetection = false;
+        if (frameReady) {
+            lastFrameMs = now;
+            frameCount++;
 
-        if (g_controller && g_controller->testMode()) {
-            uint32_t id = g_controller->session().active ? g_controller->session().tagId : TEST_EXERCISE_ID;
-            hasDetection = g_controller->testSimulator().generate(id, detection);
-        } else {
-            hasDetection = captureAprilTag(detection);
-        }
+            // Frame capture debug (every 50 frames)
+            if (frameCount % 50 == 0) {
+                Serial.print("[FRAME] count=");
+                Serial.print(frameCount);
+                Serial.print(" interval_ms=");
+                Serial.println(interval);
+            }
 
-        if (hasDetection && g_controller) {
-            g_controller->handleDetection(detection, now);
+            AprilTagDetection detection;
+            bool hasDetection = false;
+
+            if (g_controller && g_controller->testMode()) {
+                uint32_t id = g_controller->session().active ? g_controller->session().tagId : TEST_EXERCISE_ID;
+                hasDetection = g_controller->testSimulator().generate(id, detection);
+
+                if (frameCount % 50 == 0) {
+                    Serial.println("[FRAME] using test mode simulator");
+                }
+            } else {
+                hasDetection = captureAprilTag(detection);
+            }
+
+            if (hasDetection && g_controller) {
+                g_controller->handleDetection(detection, now);
+            }
         }
     }
 
@@ -1095,6 +1944,8 @@ void loop() {
         updateSnapshotCharacteristic(now);
         lastSnapshot = now;
     }
+
+    handlePendingPhotoRequest(now);
 
     delay(5);
 }
