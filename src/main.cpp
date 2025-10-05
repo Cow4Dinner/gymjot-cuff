@@ -90,6 +90,24 @@ static PendingPhotoRequest g_pendingPhotoRequest{false, false, 0};
 static bool g_photoCaptureInProgress = false;
 static uint32_t g_photoSessionCounter = 0;
 
+// Video streaming state
+struct VideoStreamState {
+    bool active;
+    bool apriltagEnabled;
+    bool motionEnabled;
+    float fps;
+    uint32_t sessionId;
+    uint32_t frameNumber;
+    uint64_t lastFrameMs;
+    // Motion detection
+    uint8_t* previousFrame;
+    size_t previousFrameSize;
+    uint32_t frameWidth;
+    uint32_t frameHeight;
+};
+static VideoStreamState g_videoState = {false, false, false, 5.0f, 0, 0, 0, nullptr, 0, 0, 0};
+static uint32_t g_videoSessionCounter = 0;
+
 // Queue for deferred status notifications (avoid blocking GATT callbacks)
 struct DeferredStatus {
     bool pending;
@@ -167,6 +185,7 @@ static void updateSnapshotCharacteristic(uint64_t nowMs);
 static void sendSnapshotEvent(uint64_t nowMs);
 static void sendOtaStatus(com_gymjot_cuff_OtaPhase phase, const char* message, bool success, uint32_t transferred = 0, uint32_t total = 0);
 static void sendPowerEvent(const char* state, uint64_t nowMs);
+static float computeDetectionDistance(const apriltag_detection_t* det);
 static std::string buildInfoString() {
     if (!g_identity) {
         g_identity = &gymjot::deviceIdentity();
@@ -254,6 +273,9 @@ static const char* deviceEventLabel(uint32_t which) {
         case com_gymjot_cuff_DeviceEvent_rep_tag: return "rep";
         case com_gymjot_cuff_DeviceEvent_photo_meta_tag: return "photo_meta";
         case com_gymjot_cuff_DeviceEvent_photo_chunk_tag: return "photo_chunk";
+        case com_gymjot_cuff_DeviceEvent_video_frame_tag: return "video_frame";
+        case com_gymjot_cuff_DeviceEvent_apriltag_detected_tag: return "apriltag_detected";
+        case com_gymjot_cuff_DeviceEvent_motion_detected_tag: return "motion_detected";
         default: return "unknown";
     }
 }
@@ -433,6 +455,75 @@ static uint32_t nextPhotoSessionId() {
     return g_photoSessionCounter;
 }
 
+static uint32_t nextVideoSessionId() {
+    g_videoSessionCounter++;
+    if (g_videoSessionCounter == 0) {
+        g_videoSessionCounter = 1;
+    }
+    return g_videoSessionCounter;
+}
+
+static bool sendVideoFrameChunk(uint32_t sessionId, uint32_t frameNumber, uint32_t totalBytes,
+                                 uint32_t offset, const uint8_t* data, size_t length,
+                                 bool finalChunk, uint32_t width, uint32_t height, uint64_t nowMs) {
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_video_frame_tag;
+    evt.event.video_frame.session_id = sessionId;
+    evt.event.video_frame.frame_number = frameNumber;
+    evt.event.video_frame.total_bytes = totalBytes;
+    evt.event.video_frame.offset = offset;
+    evt.event.video_frame.width = width;
+    evt.event.video_frame.height = height;
+    evt.event.video_frame.final_chunk = finalChunk;
+
+    size_t cappedLength = length;
+    if (cappedLength > sizeof(evt.event.video_frame.data.bytes)) {
+        cappedLength = sizeof(evt.event.video_frame.data.bytes);
+    }
+    evt.event.video_frame.data.size = static_cast<pb_size_t>(cappedLength);
+    std::memcpy(evt.event.video_frame.data.bytes, data, cappedLength);
+
+    return sendEvent(evt);
+}
+
+static bool sendAprilTagDetectedEvent(uint32_t tagId, float distanceCm, float decisionMargin,
+                                      const apriltag_detection_t* det, uint64_t nowMs) {
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_apriltag_detected_tag;
+    evt.event.apriltag_detected.tag_id = tagId;
+    evt.event.apriltag_detected.distance_cm = distanceCm;
+    evt.event.apriltag_detected.decision_margin = decisionMargin;
+
+    // Normalize corner positions (0-1 range)
+    if (det) {
+        float imgWidth = 160.0f;  // QQVGA width
+        float imgHeight = 120.0f; // QQVGA height
+        evt.event.apriltag_detected.corner_x1 = det->p[0][0] / imgWidth;
+        evt.event.apriltag_detected.corner_y1 = det->p[0][1] / imgHeight;
+        evt.event.apriltag_detected.corner_x2 = det->p[1][0] / imgWidth;
+        evt.event.apriltag_detected.corner_y2 = det->p[1][1] / imgHeight;
+        evt.event.apriltag_detected.corner_x3 = det->p[2][0] / imgWidth;
+        evt.event.apriltag_detected.corner_y3 = det->p[2][1] / imgHeight;
+        evt.event.apriltag_detected.corner_x4 = det->p[3][0] / imgWidth;
+        evt.event.apriltag_detected.corner_y4 = det->p[3][1] / imgHeight;
+    }
+
+    return sendEvent(evt);
+}
+
+static bool sendMotionDetectedEvent(float motionScore, uint32_t pixelsChanged, uint32_t totalPixels, uint64_t nowMs) {
+    com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
+    evt.timestamp_ms = nowMs;
+    evt.which_event = com_gymjot_cuff_DeviceEvent_motion_detected_tag;
+    evt.event.motion_detected.motion_score = motionScore;
+    evt.event.motion_detected.pixels_changed = pixelsChanged;
+    evt.event.motion_detected.total_pixels = totalPixels;
+
+    return sendEvent(evt);
+}
+
 static void sendStatusLabel(const char* label, uint64_t nowMs) {
     com_gymjot_cuff_DeviceEvent evt = com_gymjot_cuff_DeviceEvent_init_default;
     evt.timestamp_ms = nowMs;
@@ -513,6 +604,167 @@ static bool restorePrimaryCamera() {
         sensor->set_pixformat(sensor, PIXFORMAT_GRAYSCALE);
     }
     g_cameraReady = true;
+    return true;
+}
+
+static void detectMotion(const uint8_t* currentFrame, size_t frameSize, uint32_t width, uint32_t height, uint64_t nowMs) {
+    if (!g_videoState.motionEnabled) {
+        return;
+    }
+
+    // Initialize previous frame buffer if needed
+    if (g_videoState.previousFrame == nullptr || g_videoState.previousFrameSize != frameSize) {
+        if (g_videoState.previousFrame) {
+            free(g_videoState.previousFrame);
+        }
+        g_videoState.previousFrame = (uint8_t*)malloc(frameSize);
+        if (!g_videoState.previousFrame) {
+            Serial.println("[MOTION] Failed to allocate buffer");
+            return;
+        }
+        g_videoState.previousFrameSize = frameSize;
+        g_videoState.frameWidth = width;
+        g_videoState.frameHeight = height;
+        std::memcpy(g_videoState.previousFrame, currentFrame, frameSize);
+        return;
+    }
+
+    // Calculate motion (pixel differences)
+    uint32_t pixelsChanged = 0;
+    const uint32_t threshold = 15;  // Motion threshold (0-255)
+
+    for (size_t i = 0; i < frameSize; ++i) {
+        int diff = abs(static_cast<int>(currentFrame[i]) - static_cast<int>(g_videoState.previousFrame[i]));
+        if (diff > threshold) {
+            pixelsChanged++;
+        }
+    }
+
+    // Update previous frame
+    std::memcpy(g_videoState.previousFrame, currentFrame, frameSize);
+
+    // Calculate motion score (percentage)
+    uint32_t totalPixels = width * height;
+    float motionScore = (static_cast<float>(pixelsChanged) / static_cast<float>(totalPixels)) * 100.0f;
+
+    // Send motion event if significant motion detected (>5% of pixels changed)
+    if (motionScore > 5.0f) {
+        Serial.print("[MOTION] Motion detected: ");
+        Serial.print(motionScore);
+        Serial.print("% (");
+        Serial.print(pixelsChanged);
+        Serial.print("/");
+        Serial.print(totalPixels);
+        Serial.println(" pixels)");
+        sendMotionDetectedEvent(motionScore, pixelsChanged, totalPixels, nowMs);
+    }
+}
+
+static bool captureAndStreamVideoFrame(uint64_t nowMs) {
+    if (!g_cameraReady || !g_tagDetector) {
+        Serial.println("[VIDEO] Camera or detector not ready");
+        return false;
+    }
+
+    camera_fb_t* fb = esp_camera_fb_get();
+    if (!fb) {
+        Serial.println("[VIDEO] Failed to grab frame");
+        return false;
+    }
+
+    g_videoState.frameNumber++;
+
+    // AprilTag detection if enabled
+    apriltag_detection_t* bestDetection = nullptr;
+    float bestDistance = 0.0f;
+    double bestMargin = 0.0;
+
+    if (g_videoState.apriltagEnabled) {
+        image_u8_t image = {
+            static_cast<int32_t>(fb->width),
+            static_cast<int32_t>(fb->height),
+            static_cast<int32_t>(fb->width),
+            fb->buf
+        };
+        zarray_t* detections = apriltag_detector_detect(g_tagDetector, &image);
+
+        for (int i = 0; i < zarray_size(detections); ++i) {
+            apriltag_detection_t* det = nullptr;
+            zarray_get(detections, i, &det);
+            if (!det || det->family != g_tagFamily) {
+                continue;
+            }
+            if (!bestDetection || det->decision_margin > bestMargin) {
+                bestDetection = det;
+                bestMargin = det->decision_margin;
+                bestDistance = computeDetectionDistance(det);
+            }
+        }
+
+        if (bestDetection) {
+            Serial.print("[VIDEO] AprilTag detected: ID=");
+            Serial.print(bestDetection->id);
+            Serial.print(", distance=");
+            Serial.print(bestDistance);
+            Serial.println("cm");
+
+            sendAprilTagDetectedEvent(bestDetection->id, bestDistance, bestMargin, bestDetection, nowMs);
+        }
+
+        apriltag_detections_destroy(detections);
+    }
+
+    // Motion detection
+    if (g_videoState.motionEnabled) {
+        detectMotion(fb->buf, fb->len, fb->width, fb->height, nowMs);
+    }
+
+    // Stream frame as JPEG chunks
+    // For grayscale, we need to convert to JPEG first or send raw with lower quality
+    // For now, send the frame buffer directly (assume JPEG format from camera)
+    const size_t attPayload = (g_currentMtu > 3) ? static_cast<size_t>(g_currentMtu - 3) : static_cast<size_t>(20);
+    constexpr size_t kVideoChunkProtoOverhead = 48;
+
+    if (attPayload <= kVideoChunkProtoOverhead) {
+        esp_camera_fb_return(fb);
+        return false;
+    }
+
+    size_t chunkLimit = 160;  // Max chunk size for video
+    size_t mtuLimitedChunk = attPayload - kVideoChunkProtoOverhead;
+    if (mtuLimitedChunk < chunkLimit) {
+        chunkLimit = mtuLimitedChunk;
+    }
+
+    size_t offset = 0;
+    while (offset < fb->len) {
+        size_t remaining = fb->len - offset;
+        size_t chunk = remaining < chunkLimit ? remaining : chunkLimit;
+
+        bool sent = sendVideoFrameChunk(
+            g_videoState.sessionId,
+            g_videoState.frameNumber,
+            fb->len,
+            static_cast<uint32_t>(offset),
+            fb->buf + offset,
+            chunk,
+            (offset + chunk) >= fb->len,
+            fb->width,
+            fb->height,
+            nowMs
+        );
+
+        if (!sent) {
+            Serial.println("[VIDEO] Frame chunk send failed");
+            esp_camera_fb_return(fb);
+            return false;
+        }
+
+        offset += chunk;
+        delay(5);  // Small delay between chunks
+    }
+
+    esp_camera_fb_return(fb);
     return true;
 }
 
@@ -1598,6 +1850,69 @@ void processCommand(const uint8_t* data, size_t len) {
             queueStatusLabel("photo-queued", now);
             break;
         }
+        case com_gymjot_cuff_DeviceCommand_start_video_tag: {
+            if (g_videoState.active) {
+                Serial.println("[VIDEO] Already streaming");
+                sendStatusLabel("video-already-active", now);
+                break;
+            }
+            if (!g_cameraReady) {
+                Serial.println("[VIDEO] Camera not ready");
+                sendStatusLabel("video-error-camera", now);
+                break;
+            }
+            if (g_otaInProgress || g_photoCaptureInProgress) {
+                Serial.println("[VIDEO] Blocked by other camera operation");
+                sendStatusLabel("video-error-busy", now);
+                break;
+            }
+
+            // Initialize video state
+            g_videoState.active = true;
+            g_videoState.sessionId = nextVideoSessionId();
+            g_videoState.frameNumber = 0;
+            g_videoState.fps = (cmd.command.start_video.fps > 0.1f && cmd.command.start_video.fps <= 30.0f)
+                               ? cmd.command.start_video.fps : 5.0f;
+            g_videoState.apriltagEnabled = cmd.command.start_video.enable_apriltag_detection;
+            g_videoState.motionEnabled = cmd.command.start_video.enable_motion_detection;
+            g_videoState.lastFrameMs = 0;
+
+            Serial.println("[VIDEO] ===== VIDEO STARTED =====");
+            Serial.print("[VIDEO] Session ID: ");
+            Serial.println(g_videoState.sessionId);
+            Serial.print("[VIDEO] FPS: ");
+            Serial.println(g_videoState.fps);
+            Serial.print("[VIDEO] AprilTag detection: ");
+            Serial.println(g_videoState.apriltagEnabled ? "enabled" : "disabled");
+            Serial.print("[VIDEO] Motion detection: ");
+            Serial.println(g_videoState.motionEnabled ? "enabled" : "disabled");
+
+            sendStatusLabel("video-started", now);
+            break;
+        }
+        case com_gymjot_cuff_DeviceCommand_stop_video_tag: {
+            if (!g_videoState.active) {
+                Serial.println("[VIDEO] Not currently streaming");
+                sendStatusLabel("video-not-active", now);
+                break;
+            }
+
+            Serial.println("[VIDEO] ===== VIDEO STOPPED =====");
+            Serial.print("[VIDEO] Total frames: ");
+            Serial.println(g_videoState.frameNumber);
+
+            // Clean up video state
+            g_videoState.active = false;
+            g_videoState.frameNumber = 0;
+            if (g_videoState.previousFrame) {
+                free(g_videoState.previousFrame);
+                g_videoState.previousFrame = nullptr;
+                g_videoState.previousFrameSize = 0;
+            }
+
+            sendStatusLabel("video-stopped", now);
+            break;
+        }
         case com_gymjot_cuff_DeviceCommand_snapshot_request_tag:
             updateSnapshotCharacteristic(now);
             sendSnapshotEvent(now);
@@ -1900,8 +2215,18 @@ void loop() {
         g_controller->maintainTestMode(now);
     }
 
-    // Skip AprilTag detection during photo capture to avoid camera resource conflicts
-    if (!g_photoCaptureInProgress) {
+    // Video streaming (takes priority over normal AprilTag detection)
+    if (g_videoState.active && !g_photoCaptureInProgress) {
+        float videoInterval = 1000.0f / g_videoState.fps;
+        bool videoFrameReady = (now - g_videoState.lastFrameMs) >= static_cast<uint64_t>(videoInterval);
+
+        if (videoFrameReady) {
+            g_videoState.lastFrameMs = now;
+            captureAndStreamVideoFrame(now);
+        }
+    }
+    // Skip AprilTag detection during photo capture or video streaming to avoid camera resource conflicts
+    else if (!g_photoCaptureInProgress) {
         static uint64_t lastFrameMs = 0;
         static uint64_t frameCount = 0;
         float interval = g_controller ? g_controller->frameIntervalMs() : 125.0f;

@@ -49,6 +49,8 @@ message DeviceCommand {
     OtaCompleteCommand ota_complete = 20;
     ClearBondsCommand clear_bonds = 21;
     TakePhotoCommand take_photo = 22;
+    StartVideoCommand start_video = 23;
+    StopVideoCommand stop_video = 24;
   }
 }
 
@@ -117,6 +119,15 @@ message OtaCompleteCommand {
   bool apply = 1;
 }
 
+message StartVideoCommand {
+  float fps = 1;                    // Video frame rate (default: 5 fps)
+  bool enable_apriltag_detection = 2;  // Enable AprilTag detection in video frames
+  bool enable_motion_detection = 3;    // Enable motion detection
+}
+
+message StopVideoCommand {
+}
+
 message DeviceEvent {
   uint64 timestamp_ms = 1;
   oneof event {
@@ -133,6 +144,9 @@ message DeviceEvent {
     PowerEvent power_event = 20;
     PhotoMetaEvent photo_meta = 21;
     PhotoChunkEvent photo_chunk = 22;
+    VideoFrameEvent video_frame = 23;
+    AprilTagDetectedEvent apriltag_detected = 24;
+    MotionDetectedEvent motion_detected = 25;
   }
 }
 
@@ -232,6 +246,38 @@ message PhotoChunkEvent {
 }
 message PowerEvent {
   string state = 1;
+}
+
+message VideoFrameEvent {
+  uint32 session_id = 1;
+  uint32 frame_number = 2;
+  uint32 total_bytes = 3;
+  uint32 offset = 4;
+  bytes data = 5 [(nanopb).max_size = 200];
+  bool final_chunk = 6;
+  uint32 width = 7;
+  uint32 height = 8;
+}
+
+message AprilTagDetectedEvent {
+  uint32 tag_id = 1;
+  float distance_cm = 2;
+  float decision_margin = 3;
+  // Corner positions (normalized 0-1)
+  float corner_x1 = 4;
+  float corner_y1 = 5;
+  float corner_x2 = 6;
+  float corner_y2 = 7;
+  float corner_x3 = 8;
+  float corner_y3 = 9;
+  float corner_x4 = 10;
+  float corner_y4 = 11;
+}
+
+message MotionDetectedEvent {
+  float motion_score = 1;  // 0-100, percentage of pixels changed
+  uint32 pixels_changed = 2;
+  uint32 total_pixels = 3;
 }
 
 
