@@ -25,6 +25,7 @@ extern "C" {
 #include "CuffController.h"
 #include "DeviceIdentity.h"
 #include "PersistentConfig.h"
+#include "system/Diagnostics.h"
 
 #include <esp_sleep.h>
 #include <esp_task_wdt.h>
@@ -124,36 +125,31 @@ static constexpr int kPhotoQualityHigh = 15;  // Increased from 12 (lower number
 static constexpr int kPhotoQualityLow = 25;   // Increased from 20
 static constexpr const char* kPhotoMimeType = "image/jpeg";
 
-// Heap monitoring & stability instrumentation
+
+static constexpr uint32_t kAutoResetGracePeriodMs = 3000;
+
+static gymjot::system::HeapMonitor g_heapMonitor({
 #ifdef ENABLE_HEAP_SERIAL_LOGGING
-static uint32_t g_minFreeHeap = std::numeric_limits<uint32_t>::max();
-static uint32_t g_minFreePsram = std::numeric_limits<uint32_t>::max();
-static size_t g_minLargestFreeBlock = std::numeric_limits<size_t>::max();
-static uint32_t g_lastHeapLoggedFreeHeap = 0;
-static uint32_t g_lastHeapLoggedFreePsram = 0;
-static size_t g_lastLoggedLargestFreeBlock = 0;
-static uint64_t g_lastHeapLogMs = 0;
+    true,
+#else
+    false,
 #endif
-static uint64_t g_lowHeapThrottleUntilMs = 0;
-static uint64_t g_lastLowHeapThrottleLogMs = 0;
-static constexpr uint32_t kHeapLogIntervalMs = 5000;
-static constexpr uint32_t kHeapDropLogThreshold = 8 * 1024;
-static constexpr uint32_t kLowHeapThresholdBytes = 60 * 1024;
-static constexpr uint32_t kHeapRecoveryDelayMs = 400;
+    60 * 1024,
+    400,
+    5000,
+    8 * 1024
+});
+
+static gymjot::system::ResetScheduler g_resetScheduler(
+    kAutoResetGracePeriodMs,
+    [](const char* reason) {
+        esp_task_wdt_reset();
+        delay(100);
+        ESP.restart();
+    });
 
 static uint32_t g_aprilTagDetectionCount = 0;
 static constexpr uint32_t kDetectionsBeforeAutoReset = 600;
-static constexpr uint32_t kAutoResetGracePeriodMs = 3000;
-static bool g_pendingSystemReset = false;
-static uint64_t g_scheduledSystemResetMs = 0;
-static char g_pendingSystemResetReason[32] = "";
-
-#ifdef ENABLE_HEAP_SERIAL_LOGGING
-static bool g_heapSerialLoggingEnabled = true;
-#else
-static bool g_heapSerialLoggingEnabled = false;
-#endif
-
 static constexpr uint64_t kNoDetectionLogIntervalMs = 15000;
 static constexpr uint64_t kWrongFamilyLogIntervalMs = 5000;
 
@@ -218,9 +214,6 @@ static void sendSnapshotEvent(uint64_t nowMs);
 static void sendOtaStatus(com_gymjot_cuff_OtaPhase phase, const char* message, bool success, uint32_t transferred = 0, uint32_t total = 0);
 static void sendPowerEvent(const char* state, uint64_t nowMs);
 static float computeDetectionDistance(const apriltag_detection_t* det);
-static void logHeapStatus(const char* context, uint64_t nowMs, bool force = false);
-static void scheduleSystemReset(uint64_t nowMs, const char* reason);
-static void servicePendingSystemReset(uint64_t nowMs);
 static std::string buildInfoString() {
     if (!g_identity) {
         g_identity = &gymjot::deviceIdentity();
@@ -702,7 +695,7 @@ static bool captureAndStreamVideoFrame(uint64_t nowMs) {
     }
 
     const uint64_t captureStartMs = millis();
-    logHeapStatus("apriltag-capture-start", captureStartMs);
+    g_heapMonitor.update("apriltag-capture-start", captureStartMs);
 
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
@@ -1681,134 +1674,6 @@ static float computeDetectionDistance(const apriltag_detection_t* det) {
 }
 
 
-#ifdef ENABLE_HEAP_SERIAL_LOGGING
-static void logHeapStatus(const char* context, uint64_t nowMs, bool force) {
-    const char* safeContext = (context && context[0] != '\0') ? context : "heap";
-    const uint32_t freeHeap = ESP.getFreeHeap();
-    const uint32_t freePsram = ESP.getFreePsram();
-    const size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
-
-    if (freeHeap < g_minFreeHeap) {
-        g_minFreeHeap = freeHeap;
-    }
-    if (freePsram < g_minFreePsram) {
-        g_minFreePsram = freePsram;
-    }
-    if (largestBlock < g_minLargestFreeBlock) {
-        g_minLargestFreeBlock = largestBlock;
-    }
-
-    const bool heapDrop = g_lastHeapLoggedFreeHeap > freeHeap &&
-        (g_lastHeapLoggedFreeHeap - freeHeap) >= kHeapDropLogThreshold;
-    const bool psramDrop = g_lastHeapLoggedFreePsram > freePsram &&
-        (g_lastHeapLoggedFreePsram - freePsram) >= kHeapDropLogThreshold;
-    const bool blockDrop = g_lastLoggedLargestFreeBlock > largestBlock &&
-        (g_lastLoggedLargestFreeBlock - largestBlock) >= kHeapDropLogThreshold;
-    const bool periodic = g_heapSerialLoggingEnabled && (nowMs - g_lastHeapLogMs) >= kHeapLogIntervalMs;
-
-    if (force || heapDrop || psramDrop || blockDrop || periodic) {
-        Serial.printf("[HEAP] %s free_heap=%lu min_heap=%lu free_psram=%lu min_psram=%lu largest_block=%lu min_largest_block=%lu\n",
-            safeContext,
-            static_cast<unsigned long>(freeHeap),
-            static_cast<unsigned long>(g_minFreeHeap),
-            static_cast<unsigned long>(freePsram),
-            static_cast<unsigned long>(g_minFreePsram),
-            static_cast<unsigned long>(largestBlock),
-            static_cast<unsigned long>(g_minLargestFreeBlock));
-
-        g_lastHeapLogMs = nowMs;
-        g_lastHeapLoggedFreeHeap = freeHeap;
-        g_lastHeapLoggedFreePsram = freePsram;
-        g_lastLoggedLargestFreeBlock = largestBlock;
-    }
-
-    if (freeHeap <= kLowHeapThresholdBytes) {
-        const uint64_t newThrottle = nowMs + kHeapRecoveryDelayMs;
-        if (newThrottle > g_lowHeapThrottleUntilMs) {
-            g_lowHeapThrottleUntilMs = newThrottle;
-        }
-
-        if (nowMs - g_lastLowHeapThrottleLogMs > 2000) {
-            Serial.printf("[HEAP] Low free heap detected (%lu bytes) context=%s, deferring AprilTag capture\n",
-                          static_cast<unsigned long>(freeHeap), safeContext);
-            g_lastLowHeapThrottleLogMs = nowMs;
-        }
-    }
-}
-#else
-static void logHeapStatus(const char* context, uint64_t nowMs, bool force) {
-    const char* safeContext = (context && context[0] != '\0') ? context : "heap";
-    const uint32_t freeHeap = ESP.getFreeHeap();
-
-    if (freeHeap <= kLowHeapThresholdBytes) {
-        const uint64_t newThrottle = nowMs + kHeapRecoveryDelayMs;
-        if (newThrottle > g_lowHeapThrottleUntilMs) {
-            g_lowHeapThrottleUntilMs = newThrottle;
-        }
-
-        if (nowMs - g_lastLowHeapThrottleLogMs > 2000) {
-            Serial.printf("[HEAP] Low free heap detected (%lu bytes) context=%s, deferring AprilTag capture\n",
-                          static_cast<unsigned long>(freeHeap), safeContext);
-            g_lastLowHeapThrottleLogMs = nowMs;
-        }
-    }
-
-    if (force) {
-        Serial.printf("[HEAP] %s free_heap=%lu\n",
-                      safeContext, static_cast<unsigned long>(freeHeap));
-    }
-}
-#endif
-
-static void scheduleSystemReset(uint64_t nowMs, const char* reason) {
-    if (kDetectionsBeforeAutoReset == 0) {
-        return;
-    }
-    if (g_pendingSystemReset) {
-        return;
-    }
-
-    const char* safeReason = reason ? reason : "unspecified";
-    std::strncpy(g_pendingSystemResetReason, safeReason, sizeof(g_pendingSystemResetReason) - 1);
-    g_pendingSystemResetReason[sizeof(g_pendingSystemResetReason) - 1] = '\0';
-
-    g_pendingSystemReset = true;
-    g_scheduledSystemResetMs = nowMs + kAutoResetGracePeriodMs;
-
-    Serial.print("[RESET] Scheduled system reset (reason=");
-    Serial.print(g_pendingSystemResetReason);
-    Serial.print(") in ");
-    Serial.print(kAutoResetGracePeriodMs);
-    Serial.println("ms");
-}
-
-static void servicePendingSystemReset(uint64_t nowMs) {
-    if (!g_pendingSystemReset) {
-        return;
-    }
-
-    if (g_photoCaptureInProgress || g_videoState.active) {
-        g_scheduledSystemResetMs = nowMs + kAutoResetGracePeriodMs;
-        return;
-    }
-
-    if (nowMs < g_scheduledSystemResetMs) {
-        return;
-    }
-
-    Serial.print("[RESET] Performing scheduled system reset (reason=");
-    if (g_pendingSystemResetReason[0] != '\0') {
-        Serial.print(g_pendingSystemResetReason);
-    } else {
-        Serial.print("unspecified");
-    }
-    Serial.println(")");
-
-    esp_task_wdt_reset();
-    delay(100);
-    ESP.restart();
-}
-
 static bool captureAprilTag(AprilTagDetection& detection) {
     if (!g_cameraReady || !g_tagDetector) {
         static uint64_t lastWarn = 0;
@@ -1825,7 +1690,7 @@ static bool captureAprilTag(AprilTagDetection& detection) {
     }
 
     const uint64_t captureStartMs = millis();
-    logHeapStatus("apriltag-capture-start", captureStartMs);
+    g_heapMonitor.update("apriltag-capture-start", captureStartMs);
 
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
@@ -1835,7 +1700,7 @@ static bool captureAprilTag(AprilTagDetection& detection) {
             Serial.println("[APRILTAG] Failed to grab camera frame");
             lastFbError = now;
         }
-        logHeapStatus("apriltag-capture-no-fb", now);
+        g_heapMonitor.update("apriltag-capture-no-fb", now);
         return false;
     }
 
@@ -1914,7 +1779,7 @@ static bool captureAprilTag(AprilTagDetection& detection) {
 
     apriltag_detections_destroy(detections);
     esp_camera_fb_return(fb);
-    logHeapStatus("apriltag-capture-end", millis());
+    g_heapMonitor.update("apriltag-capture-end", millis());
     return found;
 }
 
@@ -2194,17 +2059,9 @@ void setup() {
     Serial.println();
 
 #ifdef ENABLE_HEAP_SERIAL_LOGGING
-    g_minFreeHeap = ESP.getFreeHeap();
-    g_minFreePsram = ESP.getFreePsram();
-    g_minLargestFreeBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
-    g_lastHeapLoggedFreeHeap = g_minFreeHeap;
-    g_lastHeapLoggedFreePsram = g_minFreePsram;
-    g_lastLoggedLargestFreeBlock = g_minLargestFreeBlock;
-    g_lastHeapLogMs = millis();
-    logHeapStatus("boot", g_lastHeapLogMs, true);
-#else
-    logHeapStatus("boot", millis(), true);
+    g_heapMonitor.enableSerialLogging(true);
 #endif
+    g_heapMonitor.update("boot", millis(), true);
 
     // Initialize watchdog timer (30 second timeout)
     Serial.println("Initializing watchdog timer (30s timeout)...");
@@ -2290,7 +2147,7 @@ void loop() {
     // Heartbeat and status every 10 seconds
     static uint64_t lastHeartbeat = 0;
     if (now - lastHeartbeat > 10000) {
-        logHeapStatus("heartbeat", now, true);
+        g_heapMonitor.update("heartbeat", now, true);
         Serial.println("[STATUS] --------------------------------");
         Serial.print("[STATUS] Uptime_s=");
         Serial.println(now / 1000);
@@ -2433,12 +2290,12 @@ void loop() {
             }
 
             esp_task_wdt_reset();
-            logHeapStatus("apriltag-loop", now);
+            g_heapMonitor.update("apriltag-loop", now);
 
             AprilTagDetection detection{};
             bool hasDetection = false;
 
-            if (now >= g_lowHeapThrottleUntilMs) {
+            if (!g_heapMonitor.shouldThrottle(now)) {
                 if (g_controller && g_controller->testMode()) {
                     uint32_t id = g_controller->session().active ? g_controller->session().tagId : TEST_EXERCISE_ID;
                     hasDetection = g_controller->testSimulator().generate(id, detection);
@@ -2455,10 +2312,10 @@ void loop() {
                         ++g_aprilTagDetectionCount;
                         if (kDetectionsBeforeAutoReset &&
                             (g_aprilTagDetectionCount % kDetectionsBeforeAutoReset) == 0) {
-                            scheduleSystemReset(now, "apriltag-rotation");
+                            g_resetScheduler.request("apriltag-rotation", now);
                         }
                     }
-                    logHeapStatus("apriltag-post", now);
+                    g_heapMonitor.update("apriltag-post", now);
                 }
 
                 if (hasDetection && g_controller) {
@@ -2475,9 +2332,11 @@ void loop() {
     }
 
     handlePendingPhotoRequest(now);
-    servicePendingSystemReset(now);
+    g_resetScheduler.service(now, g_photoCaptureInProgress || g_videoState.active);
 
     delay(5);
 }
+
+
 
 
