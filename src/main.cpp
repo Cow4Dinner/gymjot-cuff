@@ -725,10 +725,12 @@ static bool captureAndStreamVideoFrame(uint64_t nowMs) {
             if (!det || det->family != g_tagFamily) {
                 continue;
             }
-            if (!bestDetection || det->decision_margin > bestMargin) {
-                bestDetection = det;
-                bestMargin = det->decision_margin;
-                bestDistance = computeDetectionDistance(det);
+            if (det->decision_margin >= APRILTAG_MIN_DECISION_MARGIN) {
+                if (!bestDetection || det->decision_margin > bestMargin) {
+                    bestDetection = det;
+                    bestMargin = det->decision_margin;
+                    bestDistance = computeDetectionDistance(det);
+                }
             }
         }
 
@@ -737,7 +739,8 @@ static bool captureAndStreamVideoFrame(uint64_t nowMs) {
             Serial.print(bestDetection->id);
             Serial.print(", distance=");
             Serial.print(bestDistance);
-            Serial.println("cm");
+            Serial.print("cm, margin=");
+            Serial.println(bestMargin);
 
             sendAprilTagDetectedEvent(bestDetection->id, bestDistance, bestMargin, bestDetection, nowMs);
         }
@@ -1434,6 +1437,10 @@ static void setupController() {
 }
 
 static bool setupCamera() {
+    // Ensure the camera hardware starts from a clean state
+    esp_camera_deinit();
+    delay(50);
+
     camera_config_t config = {};
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
@@ -1457,7 +1464,7 @@ static bool setupCamera() {
     config.pixel_format = PIXFORMAT_GRAYSCALE;
     config.frame_size = FRAMESIZE_QQVGA;
     config.jpeg_quality = 12;
-    config.fb_count = 2;
+    config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
 
@@ -1738,42 +1745,74 @@ static bool captureAprilTag(AprilTagDetection& detection) {
     static uint64_t lastNoDetectionLogMs = 0;
     static uint64_t lastWrongFamilyLogMs = 0;
 
-    if (best) {
-        detection.tagId = static_cast<uint32_t>(best->id);
-        detection.distanceCm = computeDetectionDistance(best);
-        found = true;
+    // Detection stability tracking
+    static uint32_t stableTagId = 0;
+    static int stableFrameCount = 0;
+    static uint64_t lastLowMarginLogMs = 0;
 
-        g_lastAprilTagDetectionMs = nowMs;
-        g_lastAprilTagId = detection.tagId;
-        g_lastAprilTagDistanceCm = detection.distanceCm;
-        g_lastAprilTagMargin = bestMargin;
+    if (best && bestMargin >= APRILTAG_MIN_DECISION_MARGIN) {
+        uint32_t detectedId = static_cast<uint32_t>(best->id);
 
-        if (detection.tagId != lastLoggedTag || nowMs - lastDetectionLogMs > 2000) {
-            Serial.println("[APRILTAG] Detection");
-            Serial.print("[APRILTAG] tag_id=");
-            Serial.println(detection.tagId);
-            Serial.print("[APRILTAG] distance_cm=");
-            Serial.println(detection.distanceCm);
-            Serial.print("[APRILTAG] decision_margin=");
-            Serial.println(bestMargin);
-            lastDetectionLogMs = nowMs;
-            lastLoggedTag = detection.tagId;
+        // Check if this is the same tag as previous frames
+        if (detectedId == stableTagId) {
+            stableFrameCount++;
+        } else {
+            // New tag detected, reset stability counter
+            stableTagId = detectedId;
+            stableFrameCount = 1;
         }
-    } else if (wrongFamilyCount > 0) {
-        if (nowMs - lastWrongFamilyLogMs >= kWrongFamilyLogIntervalMs) {
-            Serial.print("[APRILTAG] Detected ");
-            Serial.print(wrongFamilyCount);
-            Serial.println(" tag(s) from a different family");
-            if (wrongFamilyName) {
-                Serial.print("[APRILTAG] last_family=");
-                Serial.println(wrongFamilyName);
+
+        // Only accept detection if it's been stable for required frames
+        if (stableFrameCount >= APRILTAG_STABILITY_FRAMES) {
+            detection.tagId = detectedId;
+            detection.distanceCm = computeDetectionDistance(best);
+            found = true;
+
+            g_lastAprilTagDetectionMs = nowMs;
+            g_lastAprilTagId = detection.tagId;
+            g_lastAprilTagDistanceCm = detection.distanceCm;
+            g_lastAprilTagMargin = bestMargin;
+
+            if (detection.tagId != lastLoggedTag || nowMs - lastDetectionLogMs > 2000) {
+                Serial.println("[APRILTAG] Detection");
+                Serial.print("[APRILTAG] tag_id=");
+                Serial.println(detection.tagId);
+                Serial.print("[APRILTAG] distance_cm=");
+                Serial.println(detection.distanceCm);
+                Serial.print("[APRILTAG] decision_margin=");
+                Serial.println(bestMargin);
+                lastDetectionLogMs = nowMs;
+                lastLoggedTag = detection.tagId;
             }
-            lastWrongFamilyLogMs = nowMs;
         }
     } else {
-        if (nowMs - lastNoDetectionLogMs >= kNoDetectionLogIntervalMs) {
-            Serial.println("[APRILTAG] No tags detected");
-            lastNoDetectionLogMs = nowMs;
+        // Reset stability tracking if no valid detection
+        stableTagId = 0;
+        stableFrameCount = 0;
+
+        // Log low margin detections occasionally for debugging
+        if (best && bestMargin < APRILTAG_MIN_DECISION_MARGIN && nowMs - lastLowMarginLogMs > 5000) {
+            Serial.print("[APRILTAG] Rejected low-margin detection: id=");
+            Serial.print(best->id);
+            Serial.print(", margin=");
+            Serial.println(bestMargin);
+            lastLowMarginLogMs = nowMs;
+        } else if (wrongFamilyCount > 0) {
+            if (nowMs - lastWrongFamilyLogMs >= kWrongFamilyLogIntervalMs) {
+                Serial.print("[APRILTAG] Detected ");
+                Serial.print(wrongFamilyCount);
+                Serial.println(" tag(s) from a different family");
+                if (wrongFamilyName) {
+                    Serial.print("[APRILTAG] last_family=");
+                    Serial.println(wrongFamilyName);
+                }
+                lastWrongFamilyLogMs = nowMs;
+            }
+        } else {
+            if (nowMs - lastNoDetectionLogMs >= kNoDetectionLogIntervalMs) {
+                Serial.println("[APRILTAG] No tags detected");
+                lastNoDetectionLogMs = nowMs;
+            }
         }
     }
 
@@ -2074,17 +2113,20 @@ void setup() {
 
     Serial.println();
     Serial.println("Initializing hardware...");
+
+    // Initialize AprilTag detector before camera to reserve decode tables while memory is plentiful
+    bool detectorReady = setupAprilTagDetector();
+    if (detectorReady) {
+        Serial.println("AprilTag detector: OK");
+    } else {
+        Serial.println("AprilTag detector: FAILED");
+    }
+
     g_cameraReady = setupCamera();
     if (g_cameraReady) {
         Serial.println("Camera: OK");
     } else {
         Serial.println("Camera: FAILED");
-    }
-
-    if (setupAprilTagDetector()) {
-        Serial.println("AprilTag detector: OK");
-    } else {
-        Serial.println("AprilTag detector: FAILED");
     }
 
     Serial.println();
