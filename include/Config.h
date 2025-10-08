@@ -24,7 +24,8 @@ inline gymjot::MetadataList defaultTestExerciseMetadata() {
     };
 }
 
-#define APRILTAG_TAG_SIZE_M 0.055f
+// Physical tag size (black square edge length) in meters
+#define APRILTAG_TAG_SIZE_M 0.050f
 #define APRILTAG_FX 615.0f
 #define APRILTAG_FY 615.0f
 #define APRILTAG_CX 160.0f
@@ -34,6 +35,38 @@ inline gymjot::MetadataList defaultTestExerciseMetadata() {
 #define APRILTAG_REFINE_EDGES 1
 #define APRILTAG_MIN_DECISION_MARGIN 50.0
 #define APRILTAG_STABILITY_FRAMES 3
+
+// AprilTag family selection (compile-time)
+// Options:
+//  - APRILTAG_FAMILY_TAG36H10
+//  - APRILTAG_FAMILY_TAG36H11
+//  - APRILTAG_FAMILY_TAGCIRCLE49H12
+//  - APRILTAG_FAMILY_TAGCUSTOM48H12
+//  - APRILTAG_FAMILY_TAGSTANDARD41H12
+#define APRILTAG_FAMILY_TAG36H10           1
+#define APRILTAG_FAMILY_TAG36H11           2
+#define APRILTAG_FAMILY_TAGCIRCLE49H12     3
+#define APRILTAG_FAMILY_TAGCUSTOM48H12     4
+#define APRILTAG_FAMILY_TAGSTANDARD41H12   5
+
+#ifndef APRILTAG_FAMILY_SELECT
+// Default to tagStandard41h12 to preserve current behavior.
+#define APRILTAG_FAMILY_SELECT APRILTAG_FAMILY_TAGSTANDARD41H12
+#endif
+
+// AprilTag decoder error-correction limit.
+// Warning: values >0 dramatically increase RAM use due to the quick-decode table.
+// On ESP32 with limited heap, prefer 0 for large families like tagStandard41h12.
+#ifndef APRILTAG_MAX_BITS_CORRECTED
+#define APRILTAG_MAX_BITS_CORRECTED 0
+#endif
+
+// Allocate AprilTag quick-decode table in PSRAM (ESP32) when available.
+// This is only consulted by the C library when APRILTAG_USE_PSRAM is defined
+// at compile time for that translation unit. We also set this via build flags.
+#ifndef APRILTAG_USE_PSRAM
+#define APRILTAG_USE_PSRAM 1
+#endif
 
 #define SERVICE_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHAR_RX_UUID "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"

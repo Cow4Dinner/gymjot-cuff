@@ -14,7 +14,11 @@
 
 extern "C" {
 #include "apriltag.h"
+#include "tag36h10.h"
+#include "tag36h11.h"
 #include "tagCircle49h12.h"
+#include "tagCustom48h12.h"
+#include "tagStandard41h12.h"
 #include "apriltag_pose.h"
 #include "common/image_u8.h"
 #include "common/matd.h"
@@ -1492,8 +1496,38 @@ static bool setupCamera() {
     return true;
 }
 
+static const char* selectedAprilTagFamilyName() {
+    switch (APRILTAG_FAMILY_SELECT) {
+        case APRILTAG_FAMILY_TAG36H10:          return "tag36h10";
+        case APRILTAG_FAMILY_TAG36H11:          return "tag36h11";
+        case APRILTAG_FAMILY_TAGCIRCLE49H12:    return "tagCircle49h12";
+        case APRILTAG_FAMILY_TAGCUSTOM48H12:    return "tagCustom48h12";
+        case APRILTAG_FAMILY_TAGSTANDARD41H12:  return "tagStandard41h12";
+        default:                                return "unknown";
+    }
+}
+
 static bool setupAprilTagDetector() {
-    g_tagFamily = tagCircle49h12_create();
+    // Select family
+    switch (APRILTAG_FAMILY_SELECT) {
+        case APRILTAG_FAMILY_TAG36H10:
+            g_tagFamily = tag36h10_create();
+            break;
+        case APRILTAG_FAMILY_TAG36H11:
+            g_tagFamily = tag36h11_create();
+            break;
+        case APRILTAG_FAMILY_TAGCIRCLE49H12:
+            g_tagFamily = tagCircle49h12_create();
+            break;
+        case APRILTAG_FAMILY_TAGCUSTOM48H12:
+            g_tagFamily = tagCustom48h12_create();
+            break;
+        case APRILTAG_FAMILY_TAGSTANDARD41H12:
+        default:
+            g_tagFamily = tagStandard41h12_create();
+            break;
+    }
+
     if (!g_tagFamily) {
         Serial.println("Failed to create tag family");
         return false;
@@ -1510,7 +1544,13 @@ static bool setupAprilTagDetector() {
     g_tagDetector->quad_sigma = APRILTAG_QUAD_SIGMA;
     g_tagDetector->refine_edges = APRILTAG_REFINE_EDGES;
     g_tagDetector->decode_sharpening = 0.25f;
-    apriltag_detector_add_family(g_tagDetector, g_tagFamily);
+    apriltag_detector_add_family_bits(g_tagDetector, g_tagFamily, APRILTAG_MAX_BITS_CORRECTED);
+
+    Serial.println("AprilTag detector initialized:");
+    Serial.print("  family=");
+    Serial.println(selectedAprilTagFamilyName());
+    Serial.print("  bits_corrected=");
+    Serial.println(APRILTAG_MAX_BITS_CORRECTED);
     return true;
 }
 
@@ -2151,14 +2191,14 @@ void setup() {
     Serial.println(g_controller && g_controller->testMode() ? "enabled" : "disabled");
     Serial.println();
     Serial.println("[BOOT] AprilTag configuration");
-    Serial.println("  family=tagCircle49h12");
+    Serial.println("  family=tagStandard41h12");
     Serial.println("  tag_size_cm=5.5");
     Serial.println("  expected_ids=0-2400");
     Serial.println();
     Serial.println("[BOOT] Tips");
     if (!g_controller || !g_controller->testMode()) {
         Serial.println("  - Camera mode active");
-        Serial.println("  - Use tagCircle49h12 family");
+        Serial.println("  - Use tagStandard41h12 family");
         Serial.println("  - Keep tag 30-100cm from camera");
         Serial.println("  - Provide even lighting");
         Serial.println("  - Watch for '[APRILTAG] Detection' logs");

@@ -12,7 +12,7 @@
                                     "+\u003capriltag.c\u003e",
                                     "+\u003capriltag_pose.c\u003e",
                                     "+\u003capriltag_quad_thresh.c\u003e",
-                                    "+\u003ctagCircle49h12.c\u003e",
+                                    "+\u003ctagStandard41h12.c\u003e",
                                     "+\u003ccommon/*.c\u003e",
                                     "-\u003ccommon/pthreads_cross.c\u003e",
                                     "-\u003ccommon/workerpool.c\u003e",

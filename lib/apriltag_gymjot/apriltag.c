@@ -217,7 +217,16 @@ static void quick_decode_init(apriltag_family_t *family, int maxhamming)
 //    debug_print("capacity %d, size: %.0f kB\n",
 //           capacity, qd->nentries * sizeof(struct quick_decode_entry) / 1024.0);
 
+    // Prefer allocating the large quick-decode table in PSRAM when configured
+    // and building for ESP32 to reduce pressure on internal heap.
+    // Note: This relies on APRILTAG_USE_PSRAM being passed via build flags.
+#if defined(ESP_PLATFORM) && defined(APRILTAG_USE_PSRAM) && (APRILTAG_USE_PSRAM)
+    #include "esp_heap_caps.h"
+    qd->entries = (struct quick_decode_entry*) heap_caps_calloc(
+        qd->nentries, sizeof(struct quick_decode_entry), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
     qd->entries = calloc(qd->nentries, sizeof(struct quick_decode_entry));
+#endif
     if (qd->entries == NULL) {
         debug_print("Failed to allocate hamming decode table\n");
         // errno already set to ENOMEM (Error No MEMory) by calloc() failure

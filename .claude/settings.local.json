@@ -15,7 +15,8 @@
       "Bash(pio device monitor:*)",
       "Bash(timeout:*)",
       "Bash(git restore:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []
