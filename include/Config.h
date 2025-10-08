@@ -30,11 +30,16 @@ inline gymjot::MetadataList defaultTestExerciseMetadata() {
 #define APRILTAG_FY 615.0f
 #define APRILTAG_CX 160.0f
 #define APRILTAG_CY 120.0f
-#define APRILTAG_QUAD_DECIMATE 1.5f
+#define APRILTAG_QUAD_DECIMATE 1.0f
 #define APRILTAG_QUAD_SIGMA 0.0f
 #define APRILTAG_REFINE_EDGES 1
-#define APRILTAG_MIN_DECISION_MARGIN 50.0
+#define APRILTAG_MIN_DECISION_MARGIN 20.0
 #define APRILTAG_STABILITY_FRAMES 3
+
+// Sharpening factor during decode; higher can help at distance but increases noise
+#ifndef APRILTAG_DECODE_SHARPENING
+#define APRILTAG_DECODE_SHARPENING 0.25f
+#endif
 
 // AprilTag family selection (compile-time)
 // Options:
@@ -52,6 +57,12 @@ inline gymjot::MetadataList defaultTestExerciseMetadata() {
 #ifndef APRILTAG_FAMILY_SELECT
 // Default to tagStandard41h12 to preserve current behavior.
 #define APRILTAG_FAMILY_SELECT APRILTAG_FAMILY_TAGSTANDARD41H12
+#endif
+
+// Optionally enable compatibility detection for tag36h11 alongside the
+// selected primary family. This helps if printed tags are 36h11.
+#ifndef APRILTAG_ENABLE_COMPAT_36H11
+#define APRILTAG_ENABLE_COMPAT_36H11 1
 #endif
 
 // AprilTag decoder error-correction limit.

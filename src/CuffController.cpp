@@ -281,12 +281,34 @@ void CuffController::resetReps(uint64_t nowMs) {
 }
 
 float CuffController::frameIntervalMs() const {
+    constexpr float kMinScanFps = 4.0f;
     float fps = (deviceMode_ == DeviceMode::Loiter) ? config_.loiterFps : targetFps_;
+    bool clamp = false;
+    if (deviceMode_ != DeviceMode::Loiter && fps > 0.0f && fps < kMinScanFps) {
+        clamp = true;
+        fps = kMinScanFps;
+    }
     if (fps <= 0.0f) {
         return 125.0f;
     }
     float interval = 1000.0f / fps;
-    return (interval < 10.0f) ? 10.0f : interval;
+    // Cap maximum FPS to avoid starving other tasks
+    interval = (interval < 10.0f) ? 10.0f : interval;
+
+#ifdef ARDUINO
+    static bool s_logged = false;
+    if (!s_logged) {
+        if (clamp) {
+            Serial.println("[FPS] Requested <4 fps; clamped to 4 fps for scanning");
+        } else {
+            Serial.print("[FPS] Scanning fps=");
+            Serial.println((deviceMode_ == DeviceMode::Loiter) ? config_.loiterFps : targetFps_);
+        }
+        s_logged = true;
+    }
+#endif
+
+    return interval;
 }
 
 void CuffController::handleDetection(const AprilTagDetection& detection, uint64_t nowMs) {

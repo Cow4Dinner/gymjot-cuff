@@ -66,6 +66,7 @@ static NimBLECharacteristic* g_otaChar = nullptr;
 static std::unique_ptr<CuffController> g_controller;
 static bool g_cameraReady = false;
 static apriltag_family_t* g_tagFamily = nullptr;
+static apriltag_family_t* g_tagFamilyCompat = nullptr;  // optional secondary family (e.g., tag36h11)
 static apriltag_detector_t* g_tagDetector = nullptr;
 static bool g_otaInProgress = false;
 static uint32_t g_otaTotalBytes = 0;
@@ -217,7 +218,7 @@ static void updateSnapshotCharacteristic(uint64_t nowMs);
 static void sendSnapshotEvent(uint64_t nowMs);
 static void sendOtaStatus(com_gymjot_cuff_OtaPhase phase, const char* message, bool success, uint32_t transferred = 0, uint32_t total = 0);
 static void sendPowerEvent(const char* state, uint64_t nowMs);
-static float computeDetectionDistance(const apriltag_detection_t* det);
+static float computeDetectionDistance(const apriltag_detection_t* det, int imgWidth, int imgHeight);
 static std::string buildInfoString() {
     if (!g_identity) {
         g_identity = &gymjot::deviceIdentity();
@@ -634,6 +635,20 @@ static bool restorePrimaryCamera() {
     if (sensor) {
         sensor->set_framesize(sensor, g_grayscaleCameraConfig.frame_size);
         sensor->set_pixformat(sensor, PIXFORMAT_GRAYSCALE);
+        // Improve small-tag readability; balanced for indoor light
+        sensor->set_contrast(sensor, 2);     // -2..2
+        sensor->set_brightness(sensor, 0);   // -2..2
+        sensor->set_saturation(sensor, 0);   // -2..2 (no effect in grayscale)
+        sensor->set_gain_ctrl(sensor, 1);    // enable AGC
+        sensor->set_exposure_ctrl(sensor, 1);// enable AEC
+        sensor->set_gainceiling(sensor, GAINCEILING_32X);
+        if (sensor->set_sharpness) sensor->set_sharpness(sensor, 1);   // -2..2
+        if (sensor->set_lenc) sensor->set_lenc(sensor, 1);             // lens correction on
+        if (sensor->set_dcw) sensor->set_dcw(sensor, 0);               // disable DCW to preserve detail
+        if (sensor->set_aec2) sensor->set_aec2(sensor, 1);             // alternate AEC algo
+        if (sensor->set_ae_level) sensor->set_ae_level(sensor, 0);     // neutral exposure bias
+        // Optional: modest denoise off to preserve edges (some builds)
+        // if (sensor->set_denoise) sensor->set_denoise(sensor, 0);
     }
     g_cameraReady = true;
     return true;
@@ -726,14 +741,19 @@ static bool captureAndStreamVideoFrame(uint64_t nowMs) {
         for (int i = 0; i < zarray_size(detections); ++i) {
             apriltag_detection_t* det = nullptr;
             zarray_get(detections, i, &det);
-            if (!det || det->family != g_tagFamily) {
+            bool familyOk = det && (det->family == g_tagFamily)
+#if APRILTAG_ENABLE_COMPAT_36H11
+                               || (g_tagFamilyCompat && det->family == g_tagFamilyCompat)
+#endif
+                               ;
+            if (!familyOk) {
                 continue;
             }
             if (det->decision_margin >= APRILTAG_MIN_DECISION_MARGIN) {
                 if (!bestDetection || det->decision_margin > bestMargin) {
                     bestDetection = det;
                     bestMargin = det->decision_margin;
-                    bestDistance = computeDetectionDistance(det);
+                    bestDistance = computeDetectionDistance(det, fb->width, fb->height);
                 }
             }
         }
@@ -1464,9 +1484,11 @@ static bool setupCamera() {
     config.pin_sccb_scl = SIOC_GPIO_NUM;
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
+    // Use 10MHz XCLK for brighter frames (higher exposure) to stabilize detection
     config.xclk_freq_hz = 10000000;
     config.pixel_format = PIXFORMAT_GRAYSCALE;
-    config.frame_size = FRAMESIZE_QQVGA;
+    // QVGA baseline for reliable detection; we will not decimate in detector
+    config.frame_size = FRAMESIZE_QVGA;
     config.jpeg_quality = 12;
     config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_PSRAM;
@@ -1543,8 +1565,21 @@ static bool setupAprilTagDetector() {
     g_tagDetector->quad_decimate = APRILTAG_QUAD_DECIMATE;
     g_tagDetector->quad_sigma = APRILTAG_QUAD_SIGMA;
     g_tagDetector->refine_edges = APRILTAG_REFINE_EDGES;
-    g_tagDetector->decode_sharpening = 0.25f;
+    g_tagDetector->decode_sharpening = APRILTAG_DECODE_SHARPENING;
     apriltag_detector_add_family_bits(g_tagDetector, g_tagFamily, APRILTAG_MAX_BITS_CORRECTED);
+
+#if APRILTAG_ENABLE_COMPAT_36H11
+    if (APRILTAG_FAMILY_SELECT != APRILTAG_FAMILY_TAG36H11) {
+        g_tagFamilyCompat = tag36h11_create();
+        if (g_tagFamilyCompat) {
+            apriltag_detector_add_family_bits(g_tagDetector, g_tagFamilyCompat, APRILTAG_MAX_BITS_CORRECTED);
+        }
+    }
+#endif
+
+    // Relax quad thresholds to improve sensitivity on small, low-contrast tags
+    g_tagDetector->qtp.min_white_black_diff = 3;   // default 5
+    g_tagDetector->qtp.max_line_fit_mse = 20.0f;   // default 10
 
     Serial.println("AprilTag detector initialized:");
     Serial.print("  family=");
@@ -1689,14 +1724,18 @@ static void setupBLE() {
     Serial.println("===============================");
 }
 
-static float computeDetectionDistance(const apriltag_detection_t* det) {
+static float computeDetectionDistance(const apriltag_detection_t* det, int imgWidth, int imgHeight) {
     apriltag_detection_info_t info;
     info.det = const_cast<apriltag_detection_t*>(det);
     info.tagsize = APRILTAG_TAG_SIZE_M;
-    info.fx = APRILTAG_FX;
-    info.fy = APRILTAG_FY;
-    info.cx = APRILTAG_CX;
-    info.cy = APRILTAG_CY;
+    const float kBaseW = 320.0f;
+    const float kBaseH = 240.0f;
+    const float sx = imgWidth  > 0 ? (static_cast<float>(imgWidth)  / kBaseW) : 1.0f;
+    const float sy = imgHeight > 0 ? (static_cast<float>(imgHeight) / kBaseH) : 1.0f;
+    info.fx = APRILTAG_FX * sx;
+    info.fy = APRILTAG_FY * sy;
+    info.cx = APRILTAG_CX * sx;
+    info.cy = APRILTAG_CY * sy;
 
     apriltag_pose_t pose;
     double err = estimate_tag_pose(&info, &pose);
@@ -1752,6 +1791,19 @@ static bool captureAprilTag(AprilTagDetection& detection) {
     }
 
     image_u8_t image = { static_cast<int32_t>(fb->width), static_cast<int32_t>(fb->height), static_cast<int32_t>(fb->width), fb->buf };
+#ifdef ARDUINO
+    static uint64_t s_lastFrameLog = 0;
+    uint64_t nowLog = millis();
+    if (nowLog - s_lastFrameLog > 2000) {
+        Serial.print("[APRILTAG] frame ");
+        Serial.print(fb->width);
+        Serial.print("x");
+        Serial.print(fb->height);
+        Serial.print(" len=");
+        Serial.println(fb->len);
+        s_lastFrameLog = nowLog;
+    }
+#endif
     esp_task_wdt_reset();
     zarray_t* detections = apriltag_detector_detect(g_tagDetector, &image);
 
@@ -1767,7 +1819,12 @@ static bool captureAprilTag(AprilTagDetection& detection) {
         if (!det) {
             continue;
         }
-        if (det->family != g_tagFamily) {
+        bool familyOk = (det->family == g_tagFamily)
+#if APRILTAG_ENABLE_COMPAT_36H11
+                         || (g_tagFamilyCompat && det->family == g_tagFamilyCompat)
+#endif
+                         ;
+        if (!familyOk) {
             wrongFamilyName = det->family ? det->family->name : nullptr;
             ++wrongFamilyCount;
             continue;
@@ -1805,7 +1862,7 @@ static bool captureAprilTag(AprilTagDetection& detection) {
         // Only accept detection if it's been stable for required frames
         if (stableFrameCount >= APRILTAG_STABILITY_FRAMES) {
             detection.tagId = detectedId;
-            detection.distanceCm = computeDetectionDistance(best);
+            detection.distanceCm = computeDetectionDistance(best, fb->width, fb->height);
             found = true;
 
             g_lastAprilTagDetectionMs = nowMs;
