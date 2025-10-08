@@ -642,11 +642,11 @@ static bool restorePrimaryCamera() {
         sensor->set_gain_ctrl(sensor, 1);    // enable AGC
         sensor->set_exposure_ctrl(sensor, 1);// enable AEC
         sensor->set_gainceiling(sensor, GAINCEILING_32X);
-        if (sensor->set_sharpness) sensor->set_sharpness(sensor, 1);   // -2..2
+        if (sensor->set_sharpness) sensor->set_sharpness(sensor, 2);   // -2..2
         if (sensor->set_lenc) sensor->set_lenc(sensor, 1);             // lens correction on
         if (sensor->set_dcw) sensor->set_dcw(sensor, 0);               // disable DCW to preserve detail
         if (sensor->set_aec2) sensor->set_aec2(sensor, 1);             // alternate AEC algo
-        if (sensor->set_ae_level) sensor->set_ae_level(sensor, 0);     // neutral exposure bias
+        if (sensor->set_ae_level) sensor->set_ae_level(sensor, -1);    // slight shorter exposure for motion
         // Optional: modest denoise off to preserve edges (some builds)
         // if (sensor->set_denoise) sensor->set_denoise(sensor, 0);
     }
@@ -1577,9 +1577,10 @@ static bool setupAprilTagDetector() {
     }
 #endif
 
-    // Relax quad thresholds to improve sensitivity on small, low-contrast tags
-    g_tagDetector->qtp.min_white_black_diff = 3;   // default 5
-    g_tagDetector->qtp.max_line_fit_mse = 20.0f;   // default 10
+    // Relax quad thresholds to improve sensitivity on angled/low-contrast tags
+    g_tagDetector->qtp.min_white_black_diff = 2;   // default 5
+    g_tagDetector->qtp.max_line_fit_mse = 30.0f;   // default 10
+    g_tagDetector->qtp.min_cluster_pixels = 3;     // default 5
 
     Serial.println("AprilTag detector initialized:");
     Serial.print("  family=");

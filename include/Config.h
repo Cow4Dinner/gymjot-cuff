@@ -33,8 +33,8 @@ inline gymjot::MetadataList defaultTestExerciseMetadata() {
 #define APRILTAG_QUAD_DECIMATE 1.0f
 #define APRILTAG_QUAD_SIGMA 0.0f
 #define APRILTAG_REFINE_EDGES 1
-#define APRILTAG_MIN_DECISION_MARGIN 20.0
-#define APRILTAG_STABILITY_FRAMES 3
+#define APRILTAG_MIN_DECISION_MARGIN 18.0
+#define APRILTAG_STABILITY_FRAMES 2
 
 // Sharpening factor during decode; higher can help at distance but increases noise
 #ifndef APRILTAG_DECODE_SHARPENING
