@@ -6,7 +6,7 @@
 #define BLE_FIXED_PASSKEY 123456  // Fixed passkey for production (no serial needed)
 
 #define TEST_MODE_DEFAULT false
-#define DEFAULT_FPS 8.0f
+#define DEFAULT_FPS 12.0f
 #define LOITER_FPS 0.3333f
 #define APRILTAG_LOST_MS 10000
 
@@ -25,6 +25,8 @@ inline gymjot::MetadataList defaultTestExerciseMetadata() {
 }
 
 // Physical tag size (black square edge length) in meters
+// IMPORTANT: Set this to the actual printed tag edge size.
+// Common sizes are 0.050 (5 cm) or 0.160 (16 cm).
 #define APRILTAG_TAG_SIZE_M 0.050f
 #define APRILTAG_FX 615.0f
 #define APRILTAG_FY 615.0f
@@ -33,12 +35,24 @@ inline gymjot::MetadataList defaultTestExerciseMetadata() {
 #define APRILTAG_QUAD_DECIMATE 1.0f
 #define APRILTAG_QUAD_SIGMA 0.0f
 #define APRILTAG_REFINE_EDGES 1
-#define APRILTAG_MIN_DECISION_MARGIN 18.0
-#define APRILTAG_STABILITY_FRAMES 2
+#define APRILTAG_MIN_DECISION_MARGIN 12.0
+#define APRILTAG_STABILITY_FRAMES 1
 
 // Sharpening factor during decode; higher can help at distance but increases noise
 #ifndef APRILTAG_DECODE_SHARPENING
-#define APRILTAG_DECODE_SHARPENING 0.25f
+#define APRILTAG_DECODE_SHARPENING 0.50f
+#endif
+
+// Optional distance calibration
+// After pose estimation, distances are scaled and offset to improve accuracy.
+// Measure at a known distance and adjust:
+//   distance_cm_calibrated = distance_cm_raw * APRILTAG_DISTANCE_SCALE + APRILTAG_DISTANCE_OFFSET_CM
+// Example: if raw = 123cm at actual 30.48cm, set scale ~= 0.247
+#ifndef APRILTAG_DISTANCE_SCALE
+#define APRILTAG_DISTANCE_SCALE 1.0f
+#endif
+#ifndef APRILTAG_DISTANCE_OFFSET_CM
+#define APRILTAG_DISTANCE_OFFSET_CM 0.0f
 #endif
 
 // AprilTag family selection (compile-time)

@@ -646,7 +646,7 @@ static bool restorePrimaryCamera() {
         if (sensor->set_lenc) sensor->set_lenc(sensor, 1);             // lens correction on
         if (sensor->set_dcw) sensor->set_dcw(sensor, 0);               // disable DCW to preserve detail
         if (sensor->set_aec2) sensor->set_aec2(sensor, 1);             // alternate AEC algo
-        if (sensor->set_ae_level) sensor->set_ae_level(sensor, -1);    // slight shorter exposure for motion
+        if (sensor->set_ae_level) sensor->set_ae_level(sensor, 0);     // neutral exposure bias for better range
         // Optional: modest denoise off to preserve edges (some builds)
         // if (sensor->set_denoise) sensor->set_denoise(sensor, 0);
     }
@@ -1757,6 +1757,9 @@ static float computeDetectionDistance(const apriltag_detection_t* det, int imgWi
     if (pose.t) {
         matd_destroy(pose.t);
     }
+    // Apply optional calibration
+    distanceCm = distanceCm * APRILTAG_DISTANCE_SCALE + APRILTAG_DISTANCE_OFFSET_CM;
+    if (distanceCm < 0.0f) distanceCm = 0.0f;
     return distanceCm;
 }
 
