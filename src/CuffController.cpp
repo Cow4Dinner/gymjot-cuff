@@ -1,5 +1,6 @@
 #include "CuffController.h"
 
+#include "Config.h"
 #include "PersistentConfig.h"
 #include <algorithm>
 #include <cmath>
@@ -111,6 +112,11 @@ bool RepTracker::update(float distance, uint64_t nowMs) {
         descentTarget_ = distance;
         lastDistance_ = distance;
         lastMovementMs_ = nowMs;
+#if DISTANCE_STREAM_DEBUG
+#ifdef ARDUINO
+        Serial.println("[REP] INIT | dist=0.0 | bottom=0.0 | peak=0.0 | phase=WaitingBottom | reps=0");
+#endif
+#endif
         return false;
     }
 
@@ -124,6 +130,9 @@ bool RepTracker::update(float distance, uint64_t nowMs) {
         bottomRef_ = distance;
     }
 
+    bool repCompleted = false;
+    const char* phaseStr = "WaitingBottom";
+
     switch (phase_) {
         case Phase::WaitingBottom: {
             float climb = bottomRef_ - distance;
@@ -131,7 +140,13 @@ bool RepTracker::update(float distance, uint64_t nowMs) {
                 phase_ = Phase::Ascending;
                 peakDistance_ = distance;
                 descentTarget_ = bottomRef_;
+#if DISTANCE_STREAM_DEBUG
+#ifdef ARDUINO
+                Serial.println("[REP] PHASE: WaitingBottom -> Ascending");
+#endif
+#endif
             }
+            phaseStr = "WaitingBottom";
             break;
         }
         case Phase::Ascending: {
@@ -141,7 +156,13 @@ bool RepTracker::update(float distance, uint64_t nowMs) {
             float rise = distance - peakDistance_;
             if (rise >= minTravelCm_ * 0.3f) {
                 phase_ = Phase::Descending;
+#if DISTANCE_STREAM_DEBUG
+#ifdef ARDUINO
+                Serial.println("[REP] PHASE: Ascending -> Descending");
+#endif
+#endif
             }
+            phaseStr = "Ascending";
             break;
         }
         case Phase::Descending: {
@@ -155,8 +176,14 @@ bool RepTracker::update(float distance, uint64_t nowMs) {
                 peakDistance_ = distance;
                 descentTarget_ = distance;
                 lastMovementMs_ = nowMs;
-                return true;
+                repCompleted = true;
+#if DISTANCE_STREAM_DEBUG
+#ifdef ARDUINO
+                Serial.println("[REP] *** REP COMPLETED ***");
+#endif
+#endif
             }
+            phaseStr = "Descending";
             break;
         }
     }
@@ -166,9 +193,29 @@ bool RepTracker::update(float distance, uint64_t nowMs) {
         bottomRef_ = distance;
         peakDistance_ = distance;
         descentTarget_ = distance;
+#if DISTANCE_STREAM_DEBUG
+#ifdef ARDUINO
+        Serial.println("[REP] TIMEOUT: Reset to WaitingBottom");
+#endif
+#endif
     }
 
-    return false;
+#if DISTANCE_STREAM_DEBUG
+#ifdef ARDUINO
+    Serial.print("[REP] dist=");
+    Serial.print(distance, 1);
+    Serial.print(" | bottom=");
+    Serial.print(bottomRef_, 1);
+    Serial.print(" | peak=");
+    Serial.print(peakDistance_, 1);
+    Serial.print(" | phase=");
+    Serial.print(phaseStr);
+    Serial.print(" | reps=");
+    Serial.println(reps_);
+#endif
+#endif
+
+    return repCompleted;
 }
 
 void TestModeSimulator::reset() {
@@ -297,6 +344,25 @@ float CuffController::frameIntervalMs() const {
 
 #ifdef ARDUINO
     static bool s_logged = false;
+#if DISTANCE_STREAM_DEBUG
+    // In debug mode, log every time to see mode changes
+    static uint32_t lastFpsLog = 0;
+    uint32_t now = millis();
+    if (now - lastFpsLog > 5000) {
+        Serial.print("[FPS] mode=");
+        switch (deviceMode_) {
+            case DeviceMode::Idle: Serial.print("Idle"); break;
+            case DeviceMode::AwaitingExercise: Serial.print("AwaitingExercise"); break;
+            case DeviceMode::Scanning: Serial.print("Scanning"); break;
+            case DeviceMode::Loiter: Serial.print("Loiter"); break;
+        }
+        Serial.print(" | fps=");
+        Serial.print(fps, 2);
+        Serial.print(" | interval_ms=");
+        Serial.println(interval, 1);
+        lastFpsLog = now;
+    }
+#else
     if (!s_logged) {
         if (clamp) {
             Serial.println("[FPS] Requested <4 fps; clamped to 4 fps for scanning");
@@ -306,6 +372,7 @@ float CuffController::frameIntervalMs() const {
         }
         s_logged = true;
     }
+#endif
 #endif
 
     return interval;
@@ -326,35 +393,61 @@ void CuffController::handleDetection(const AprilTagDetection& detection, uint64_
         notifyStatus("awaitingExercise", nowMs);
 
         // Debug output
+#if !DISTANCE_STREAM_DEBUG
 #ifdef ARDUINO
         Serial.println("[CONTROLLER] New AprilTag session");
         Serial.print("[CONTROLLER] Tag ID: ");
         Serial.println(detection.tagId);
 #endif
+#endif
     }
 
     session_.lastSeenMs = nowMs;
 
+#if DISTANCE_STREAM_DEBUG
+#ifdef ARDUINO
+    Serial.print("[");
+    Serial.print(nowMs);
+    Serial.print("ms] [DETECTION] tag_id=");
+    Serial.print(detection.tagId);
+    Serial.print(" | distance_cm=");
+    Serial.print(detection.distanceCm, 1);
+    Serial.print(" | metadata_ready=");
+    Serial.print(session_.metadataReady ? "true" : "false");
+    Serial.print(" | mode=");
+    switch (deviceMode_) {
+        case DeviceMode::Idle: Serial.println("Idle"); break;
+        case DeviceMode::AwaitingExercise: Serial.println("AwaitingExercise"); break;
+        case DeviceMode::Scanning: Serial.println("Scanning"); break;
+        case DeviceMode::Loiter: Serial.println("Loiter"); break;
+    }
+#endif
+#endif
+
     if (!session_.metadataReady) {
         if (testMode_) {
             applyExerciseMetadata(detection.tagId, config_.testExerciseName, config_.testExerciseMetadata, nowMs);
+#if !DISTANCE_STREAM_DEBUG
 #ifdef ARDUINO
             Serial.println("[CONTROLLER] Test exercise metadata applied");
+#endif
 #endif
         } else if (!session_.requestSent || (nowMs - session_.lastRequestMs) >= 1000) {
             sendExerciseRequest(detection.tagId, nowMs);
             session_.requestSent = true;
             session_.lastRequestMs = nowMs;
+#if !DISTANCE_STREAM_DEBUG
 #ifdef ARDUINO
             Serial.println("[CONTROLLER] Requested exercise metadata from mobile app");
 #endif
+#endif
         }
-        return;
+        // Don't return - continue to rep tracking even without metadata
     }
 
     exitLoiter(nowMs);
-    sendScan(detection, nowMs);
 
+    // Always run rep tracking once session is active, even without metadata
     if (repTracker_.update(detection.distanceCm, nowMs)) {
 #ifdef ARDUINO
         Serial.println("[REPS] -------------------------------");
@@ -363,6 +456,11 @@ void CuffController::handleDetection(const AprilTagDetection& detection, uint64_
         printSanitizedLine("[REPS] Exercise: ", session_.name);
 #endif
         sendRep(nowMs);
+    }
+
+    // Only send scan events if metadata is ready
+    if (session_.metadataReady) {
+        sendScan(detection, nowMs);
     }
 }
 
@@ -559,9 +657,10 @@ void CuffController::enterLoiter(uint64_t nowMs) {
 }
 
 void CuffController::exitLoiter(uint64_t nowMs) {
-    if (deviceMode_ == DeviceMode::Loiter && session_.metadataReady) {
-        deviceMode_ = DeviceMode::Scanning;
-        notifyStatus("scanning", nowMs);
+    if (deviceMode_ == DeviceMode::Loiter) {
+        // Exit loiter and go to scanning if metadata ready, otherwise AwaitingExercise
+        deviceMode_ = session_.metadataReady ? DeviceMode::Scanning : DeviceMode::AwaitingExercise;
+        notifyStatus(session_.metadataReady ? "scanning" : "awaitingExercise", nowMs);
     }
 }
 

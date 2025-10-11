@@ -44,6 +44,9 @@ public:
     bool update(float distanceCm, uint64_t nowMs);
     float minTravelCm() const { return minTravelCm_; }
     uint64_t maxIdleMs() const { return maxRepIdleMs_; }
+    Phase phase() const { return phase_; }
+    float bottomRef() const { return bottomRef_; }
+    float peakDistance() const { return peakDistance_; }
 
 private:
     Phase phase_ = Phase::WaitingBottom;

@@ -13,6 +13,9 @@
 #define DEFAULT_MIN_REP_TRAVEL_CM 12.0f
 #define DEFAULT_MAX_REP_IDLE_MS 5000
 
+// Distance streaming debug mode - shows every detection with rep state (Use this to debug reps)
+#define DISTANCE_STREAM_DEBUG 1
+
 #define TEST_EXERCISE_ID 4242
 #define TEST_EXERCISE_NAME "Demo Exercise"
 
@@ -32,7 +35,7 @@ inline gymjot::MetadataList defaultTestExerciseMetadata() {
 #define APRILTAG_FY 615.0f
 #define APRILTAG_CX 160.0f
 #define APRILTAG_CY 120.0f
-#define APRILTAG_QUAD_DECIMATE 1.0f
+#define APRILTAG_QUAD_DECIMATE 3.0f  // 2.0 = 4x faster, 3.0 = 9x faster (lower accuracy at distance)
 #define APRILTAG_QUAD_SIGMA 0.0f
 #define APRILTAG_REFINE_EDGES 1
 #define APRILTAG_MIN_DECISION_MARGIN 12.0

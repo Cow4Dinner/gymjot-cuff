@@ -1418,12 +1418,16 @@ static bool sendEvent(const com_gymjot_cuff_DeviceEvent& event) {
     #ifdef ARDUINO
         static uint32_t lastSkipLogMs = 0;
         uint32_t nowMs = millis();
+#if !DISTANCE_STREAM_DEBUG
         if (nowMs - lastSkipLogMs > 1000) {
             Serial.println("[BLE] skip notify (no client connected)");
             lastSkipLogMs = nowMs;
         }
+#endif
     #else
+#if !DISTANCE_STREAM_DEBUG
         Serial.println("[BLE] skip notify (no client connected)");
+#endif
     #endif
         return false;
     }
@@ -1798,6 +1802,7 @@ static bool captureAprilTag(AprilTagDetection& detection) {
 #ifdef ARDUINO
     static uint64_t s_lastFrameLog = 0;
     uint64_t nowLog = millis();
+#if !DISTANCE_STREAM_DEBUG
     if (nowLog - s_lastFrameLog > 2000) {
         Serial.print("[APRILTAG] frame ");
         Serial.print(fb->width);
@@ -1807,6 +1812,7 @@ static bool captureAprilTag(AprilTagDetection& detection) {
         Serial.println(fb->len);
         s_lastFrameLog = nowLog;
     }
+#endif
 #endif
     esp_task_wdt_reset();
     zarray_t* detections = apriltag_detector_detect(g_tagDetector, &image);
@@ -1874,6 +1880,7 @@ static bool captureAprilTag(AprilTagDetection& detection) {
             g_lastAprilTagDistanceCm = detection.distanceCm;
             g_lastAprilTagMargin = bestMargin;
 
+#if !DISTANCE_STREAM_DEBUG
             if (detection.tagId != lastLoggedTag || nowMs - lastDetectionLogMs > 2000) {
                 Serial.println("[APRILTAG] Detection");
                 Serial.print("[APRILTAG] tag_id=");
@@ -1885,6 +1892,7 @@ static bool captureAprilTag(AprilTagDetection& detection) {
                 lastDetectionLogMs = nowMs;
                 lastLoggedTag = detection.tagId;
             }
+#endif
         }
     } else {
         // Reset stability tracking if no valid detection
@@ -1910,10 +1918,12 @@ static bool captureAprilTag(AprilTagDetection& detection) {
                 lastWrongFamilyLogMs = nowMs;
             }
         } else {
+#if !DISTANCE_STREAM_DEBUG
             if (nowMs - lastNoDetectionLogMs >= kNoDetectionLogIntervalMs) {
                 Serial.println("[APRILTAG] No tags detected");
                 lastNoDetectionLogMs = nowMs;
             }
+#endif
         }
     }
 
@@ -2291,6 +2301,7 @@ void loop() {
     static uint64_t lastHeartbeat = 0;
     if (now - lastHeartbeat > 10000) {
         g_heapMonitor.update("heartbeat", now, true);
+#if !DISTANCE_STREAM_DEBUG
         Serial.println("[STATUS] --------------------------------");
         Serial.print("[STATUS] Uptime_s=");
         Serial.println(now / 1000);
@@ -2328,6 +2339,7 @@ void loop() {
             Serial.println("[STATUS] last_tag_age_ms=never");
         }
         Serial.println("[STATUS] --------------------------------");
+#endif
         lastHeartbeat = now;
     }
 
@@ -2418,19 +2430,37 @@ void loop() {
         static uint64_t lastFrameMs = 0;
         static uint64_t frameCount = 0;
         float interval = g_controller ? g_controller->frameIntervalMs() : 125.0f;
+
+#if DISTANCE_STREAM_DEBUG
+        static uint64_t lastIntervalLog = 0;
+        if (now - lastIntervalLog > 5000) {
+            Serial.print("[MAIN_LOOP] frame_interval_ms=");
+            Serial.println(interval);
+            lastIntervalLog = now;
+        }
+#endif
+
         bool frameReady = (now - lastFrameMs) >= static_cast<uint64_t>(interval);
 
         if (frameReady) {
             lastFrameMs = now;
             frameCount++;
 
+#if DISTANCE_STREAM_DEBUG
+            Serial.print("[");
+            Serial.print(now);
+            Serial.println("ms] [FRAME_START]");
+#endif
+
             // Frame capture debug (every 50 frames)
+#if !DISTANCE_STREAM_DEBUG
             if (frameCount % 50 == 0) {
                 Serial.print("[FRAME] count=");
                 Serial.print(frameCount);
                 Serial.print(" interval_ms=");
                 Serial.println(interval);
             }
+#endif
 
             esp_task_wdt_reset();
             g_heapMonitor.update("apriltag-loop", now);
@@ -2438,14 +2468,21 @@ void loop() {
             AprilTagDetection detection{};
             bool hasDetection = false;
 
-            if (!g_heapMonitor.shouldThrottle(now)) {
+            // In DISTANCE_STREAM_DEBUG mode, skip heap throttling to ensure full-speed detection
+            bool skipThisFrame = false;
+#if !DISTANCE_STREAM_DEBUG
+            skipThisFrame = g_heapMonitor.shouldThrottle(now);
+#endif
+
+            if (!skipThisFrame) {
                 if (g_controller && g_controller->testMode()) {
                     uint32_t id = g_controller->session().active ? g_controller->session().tagId : TEST_EXERCISE_ID;
                     hasDetection = g_controller->testSimulator().generate(id, detection);
-
+#if !DISTANCE_STREAM_DEBUG
                     if (frameCount % 50 == 0) {
                         Serial.println("[FRAME] using test mode simulator");
                     }
+#endif
                 } else {
                     hasDetection = captureAprilTag(detection);
                 }
@@ -2464,7 +2501,21 @@ void loop() {
                 if (hasDetection && g_controller) {
                     g_controller->handleDetection(detection, now);
                 }
+#if DISTANCE_STREAM_DEBUG
+                else {
+                    Serial.print("[");
+                    Serial.print(millis());
+                    Serial.println("ms] [FRAME_END] no_detection");
+                }
+#endif
             }
+#if DISTANCE_STREAM_DEBUG
+            else {
+                Serial.print("[");
+                Serial.print(millis());
+                Serial.println("ms] [FRAME_SKIPPED] throttled");
+            }
+#endif
         }
     }
 
